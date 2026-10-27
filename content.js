@@ -1525,8 +1525,14 @@
     const block = segment?.block;
     // Codex PR #20 P2: a detached block (SPA navigation removed it mid-batch)
     // no longer exists in the document — creating a retry slot would inflate
-    // failed counts with blocks the user cannot see or retry. Drop silently.
+    // failed counts with blocks the user cannot see or retry. Drop the marker,
+    // but still release the provisional total slot reserved when the batch
+    // started (pruneDetachedBlockRecords only reclaims blockRecords/failedBlocks).
     if (!block?.isConnected) {
+      if (!(block && failedBlocks.has(block)) && state.total > 0) {
+        state.total -= 1;
+      }
+      updateProgressPill();
       return;
     }
     // A block already holding a failure slot keeps it: when the observer

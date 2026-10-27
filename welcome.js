@@ -603,9 +603,15 @@
         setStoredKeyNeedsVerification(keyProvider);
         return;
       }
-      if (!persisted || provider !== keyProvider || els.s2Key.value.trim()) {
-        // The stored key was replaced by another surface (CAS mismatch) or
-        // the user switched away — do not render this verdict.
+      if (!persisted) {
+        // CAS mismatch: another surface replaced the key — restore the
+        // verification action (button was disabled + spinner while verifying).
+        setKeyMessage("已保存的 Key 已被其他窗口更改，需要重新验证", "");
+        setStoredKeyNeedsVerification(keyProvider);
+        return;
+      }
+      if (provider !== keyProvider || els.s2Key.value.trim()) {
+        // The user switched away — do not render this verdict.
         return;
       }
       setKeyMessage(`✓ 已连接 · 尾号 ${key.slice(-4)} · 已保存`, "ok");
