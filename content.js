@@ -1523,18 +1523,22 @@
 
   function noteSegmentFailure(segment, reason = "") {
     const block = segment?.block;
+    // Codex PR #20 P2: a detached block (SPA navigation removed it mid-batch)
+    // no longer exists in the document — creating a retry slot would inflate
+    // failed counts with blocks the user cannot see or retry. Drop silently.
+    if (!block?.isConnected) {
+      return;
+    }
     // A block already holding a failure slot keeps it: when the observer
     // retries the same block, the retry must replace the slot (see the
     // success path below), never stack a second failed/total count.
-    if (block && failedBlocks.has(block)) {
+    if (failedBlocks.has(block)) {
       updateFailedMarker(block, reason);
       updateProgressPill();
       return;
     }
-    if (block) {
-      failedBlocks.add(block);
-      showFailedMarker(block, reason);
-    }
+    failedBlocks.add(block);
+    showFailedMarker(block, reason);
     state.failed += 1;
     updateProgressPill();
   }
@@ -2724,6 +2728,10 @@
 
   // Same effect as the SET_DISPLAY_MODE message, used by the pill's segmented
   // control (trusted click only).
+  // Codex PR #20 P2: serialize writes via a promise chain so rapid clicks
+  // cannot interleave storage updates (the second click's write could
+  // otherwise land before the first's, losing the intended final value).
+  let displayModeWriteChain = Promise.resolve();
   function setDisplayModePreference(mode) {
     const normalized = Utils.normalizeDisplayMode(mode);
     if (!normalized) {
@@ -2732,7 +2740,10 @@
     state.displayMode = normalized;
     applyDocumentDisplayMode(normalized);
     refreshAllBlockDisplays();
-    chrome.storage.local.set({ displayMode: normalized });
+    displayModeWriteChain = displayModeWriteChain
+      .catch(() => {})
+      .then(() => chrome.storage.local.set({ displayMode: normalized }))
+      .catch(() => {});
     updateProgressPill();
   }
 

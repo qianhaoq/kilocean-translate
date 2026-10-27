@@ -424,12 +424,32 @@ async function sendSelectionTranslateCommand(tabId, source, selectionText) {
 
 // Alt+A / 右键「翻译此页」: same no-key rule as the popup's translate button —
 // without a provider key nothing billable starts, the user lands in settings.
+// Codex PR #20 P2: credentials already marked failed also open settings —
+// billing a known-bad key wastes the user's quota and returns the same error.
 async function startPageTranslationFromCommand(tabId) {
   const settings = await loadSettings();
   const providerConfig = getProviderConfig(settings.provider);
-  if (!String(settings[providerConfig.keyField] || "").trim()) {
+  const key = String(settings[providerConfig.keyField] || "").trim();
+  if (!key) {
     await openSettingsTab();
     return;
+  }
+  const statusField = `${settings.provider}KeyStatus`;
+  const statusForField = `${settings.provider}KeyStatusFor`;
+  try {
+    const stored = await chrome.storage.local.get([statusField, statusForField]);
+    const status = stored[statusField];
+    const fingerprint = stored[statusForField];
+    if (
+      status === "failed" &&
+      fingerprint === DeepSeekTranslatorUtils.keyFingerprint(key)
+    ) {
+      await openSettingsTab();
+      return;
+    }
+  } catch {
+    // Storage read failed — proceed anyway, the translate request will fail
+    // with its own error if the key is truly invalid.
   }
   if (!(await ensureContentScriptInTab(tabId))) {
     await flagTabUnavailable(tabId);

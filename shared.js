@@ -660,13 +660,18 @@
   // limiting and server-side 5xx say nothing about the KEY, so a verdict
   // carrying one of them is transient and must never be cached (Codex PR #19
   // P1). Auth/format failures (401/402/…) do describe the key and are cached.
+  // Codex PR #20 P2: INVALID_API_RESPONSE (malformed provider JSON, missing
+  // translations array, …) is likewise transient — the provider returned
+  // garbage, which says nothing about the key; caching it would lock out a
+  // valid key until the user pastes it again.
   const TRANSIENT_KEY_VERIFIER_CODES = new Set([
     "NETWORK_ERROR",
     "FETCH_TIMEOUT",
     "TIMEOUT",
     "API_429",
     "HTTP_429",
-    "429"
+    "429",
+    "INVALID_API_RESPONSE"
   ]);
 
   // True when a failed verification result is transient (retryable) rather
