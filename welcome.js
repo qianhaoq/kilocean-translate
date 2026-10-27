@@ -302,24 +302,37 @@
    * and the per-provider verification status + fingerprint (P2: the popup
    * reads the status, the keyVerified flag stays for compatibility).
    * Atomically, so background loadSettings (the sample translation) and the
-   * popup both see the chosen provider with a matching model + key. */
+   * popup both see the chosen provider with a matching model + key.
+   * Codex PR #20 P2: compare-and-set — only persist if the stored key still
+   * matches what was verified. While N was being verified, another popup may
+   * have saved O; writing N's "verified" would overwrite O. Returns false
+   * when the write was skipped due to a mismatch. */
   async function persistVerifiedProvider(chosenProvider, newlyPastedKey = null) {
     if (!canStore) {
-      return;
+      return false;
     }
     const meta = PROVIDERS[chosenProvider];
-    const storedKey = newlyPastedKey || (await readStoredKey(chosenProvider));
+    const keyToVerify = newlyPastedKey || (await readStoredKey(chosenProvider));
+    if (!keyToVerify) {
+      return false;
+    }
+    const currentStored = await chrome.storage.local.get([meta.keyField]);
+    const currentKey = String((currentStored && currentStored[meta.keyField]) || "").trim();
+    if (Utils.keyFingerprint(currentKey) !== Utils.keyFingerprint(keyToVerify)) {
+      return false;
+    }
     const patch = {
       provider: chosenProvider,
       model: meta.model,
       keyVerified: true,
-      apiKey: storedKey,
-      ...Utils.keyStatusPatch(chosenProvider, "verified", storedKey)
+      apiKey: keyToVerify,
+      ...Utils.keyStatusPatch(chosenProvider, "verified", keyToVerify)
     };
     if (newlyPastedKey) {
       patch[meta.keyField] = newlyPastedKey;
     }
     await chrome.storage.local.set(patch);
+    return true;
   }
 
   /* The shared verifier's run(): save the key first (TEST_CONNECTION bills
@@ -445,10 +458,13 @@
     }
     if (result && result.ok && !result.environmentSkipped) {
       // Verified: persist the chosen provider atomically (P2-1) before the
-      // confirmation message lands.
-      await persistVerifiedProvider(keyProvider, key);
-      if (!isCurrentKeyVerification(token, keyProvider, key)) {
-        // The user moved on to another value while the persist was in flight.
+      // confirmation message lands. The persist returns false when the
+      // current stored key no longer matches (another popup replaced it).
+      const persisted = await persistVerifiedProvider(keyProvider, key);
+      if (!persisted || !isCurrentKeyVerification(token, keyProvider, key)) {
+        // The user moved on to another value while the persist was in flight,
+        // or the stored key was replaced by another surface — do not render
+        // this verdict for a key that is no longer current.
         return;
       }
     } else if (result && !result.ok && !Utils.isTransientKeyVerdict(result)) {
@@ -579,14 +595,23 @@
     }
     storedKeyVerifying = false;
     if (result && result.ok && !result.environmentSkipped) {
+      let persisted = false;
       try {
-        await persistVerifiedProvider(keyProvider, key);
+        persisted = await persistVerifiedProvider(keyProvider, key);
       } catch {
         setKeyMessage("保存失败，请重试", "er");
         setStoredKeyNeedsVerification(keyProvider);
         return;
       }
+      if (!persisted) {
+        // CAS mismatch: another surface replaced the key — restore the
+        // verification action (button was disabled + spinner while verifying).
+        setKeyMessage("已保存的 Key 已被其他窗口更改，需要重新验证", "");
+        setStoredKeyNeedsVerification(keyProvider);
+        return;
+      }
       if (provider !== keyProvider || els.s2Key.value.trim()) {
+        // The user switched away — do not render this verdict.
         return;
       }
       setKeyMessage(`✓ 已连接 · 尾号 ${key.slice(-4)} · 已保存`, "ok");
@@ -672,10 +697,17 @@
         await verifyStoredKeyAndContinue();
         return;
       }
+      let persisted = false;
       try {
-        await persistVerifiedProvider(chosenProvider, null);
+        persisted = await persistVerifiedProvider(chosenProvider, null);
       } catch {
         setKeyMessage("保存失败，请重试", "er");
+        return;
+      }
+      if (!persisted) {
+        // CAS mismatch: another surface replaced the key — re-verify.
+        setKeyMessage("已保存的 Key 已被其他窗口更改，需要重新验证", "");
+        setStoredKeyNeedsVerification(chosenProvider);
         return;
       }
     }
