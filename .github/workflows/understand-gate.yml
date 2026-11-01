@@ -1,4 +1,4 @@
-# Diff Quiz Gate caller — pin to qianhaoq/devflow-gates@fe7cf65
+# Diff Quiz Gate caller — pin to qianhaoq/devflow-gates@5f984ac
 # Required check name: "understand / Diff Quiz Gate"
 #
 # Secrets: set GLM_API_KEY (preferred) or ZHIPU_API_KEY in repo Actions secrets.
@@ -45,7 +45,7 @@ jobs:
       pull-requests: write
       issues: write
       actions: write
-    uses: qianhaoq/devflow-gates/.github/workflows/understand-gate.yml@fe7cf651ef515f165041738dc285b03ce3817bb9 # devflow-gates main @ fe7cf65
+    uses: qianhaoq/devflow-gates/.github/workflows/understand-gate.yml@5f984ac2f3f879fe2f69d803c672e22f4d9ac1fc # devflow-gates main @ 5f984ac
     with:
       runs_on: ubuntu-latest  # public repo has no self-hosted runners
       glm_model: 'glm-5.3-flash'
@@ -54,8 +54,11 @@ jobs:
       ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
 
   understand-refresh:
+    # Bot quiz comments embed Answer/Override headers plus <!-- diff-quiz-gate:quiz -->.
+    # That marker must not schedule a refresh (devflow-gates#30).
     if: >-
       github.event_name == 'issue_comment' && github.event.issue.pull_request &&
+      !contains(github.event.comment.body, '<!-- diff-quiz-gate:quiz -->') &&
       (contains(github.event.comment.body, '## Diff Quiz Answer') ||
        contains(github.event.comment.body, '## Diff Quiz Override') ||
        startsWith(github.event.comment.body, '/recheck'))
@@ -66,7 +69,7 @@ jobs:
       pull-requests: write
       issues: write
       actions: write
-    uses: qianhaoq/devflow-gates/.github/workflows/understand-gate.yml@fe7cf651ef515f165041738dc285b03ce3817bb9 # devflow-gates main @ fe7cf65
+    uses: qianhaoq/devflow-gates/.github/workflows/understand-gate.yml@5f984ac2f3f879fe2f69d803c672e22f4d9ac1fc # devflow-gates main @ 5f984ac
     with:
       runs_on: ubuntu-latest  # public repo has no self-hosted runners
       glm_model: 'glm-5.3-flash'
