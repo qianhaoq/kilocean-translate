@@ -55,6 +55,7 @@
   // never count as ours). WeakMap: entries die with their block.
   const failedMarkers = new WeakMap();
 
+  let captionSession = null;
   let mutationObserver = null;
   let dynamicTimer = null;
   let workQueue = Promise.resolve();
@@ -354,7 +355,133 @@
     return false;
   });
 
+  // Caption requests are serialized; while one is pending only the newest
+  // stable visible cue is retained. Late results may warm the LRU, never the UI.
+  function startYouTubeCaptions(options) {
+    restoreOriginal({ silent: true });
+    lastSeenUrl = location.href;
+    const player = document.querySelector(".html5-video-player");
+    const cc = player?.querySelector('.ytp-subtitles-button');
+    if (!player || (cc?.getAttribute("aria-pressed") !== "true" && !player.querySelector(".ytp-caption-segment"))) {
+      showToast("请先开启 YouTube 字幕（CC），再点击翻译此页", "info", 5000);
+      return;
+    }
+    activeRunSettings = {
+      provider: options.provider === "kimi" ? "kimi" : "deepseek",
+      targetLanguage: options.targetLanguage || "zh-CN",
+      model: Utils.migrateModelName(options.model) || "deepseek-flash"
+    };
+    Object.assign(state, activeRunSettings, {
+      active: true, phase: "translated",
+      displayMode: Utils.normalizeDisplayMode(options.displayMode || state.displayMode)
+    });
+    const overlay = document.createElement("div");
+    overlay.setAttribute("data-deepseek-translator-ui", "true");
+    overlay.style.cssText = "position:absolute;left:8%;right:8%;bottom:20%;z-index:60;pointer-events:none;text-align:center;white-space:pre-line;color:white;font:clamp(16px,2.2vw,30px)/1.4 sans-serif;text-shadow:0 1px 4px black;background:rgba(0,0,0,.65);border-radius:6px;padding:6px;";
+    overlay.hidden = true;
+    player.appendChild(overlay);
+    const session = {
+      player, overlay, runId: generation, settings: { ...activeRunSettings },
+      text: "", translation: "", ready: "", busy: false, timer: null,
+      firstChange: 0, observer: null
+    };
+    captionSession = session;
+    session.observer = new MutationObserver((records) => {
+      if (records.some((record) => !isTranslatorUiElement(
+        record.target.nodeType === Node.ELEMENT_NODE ? record.target : record.target.parentElement
+      ))) {
+        readYouTubeCaptions(session);
+      }
+    });
+    session.observer.observe(player, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["class", "style", "aria-pressed"] });
+    applyDocumentDisplayMode(state.displayMode);
+    readYouTubeCaptions(session);
+    showToast("字幕翻译已开启；请保持原生 CC 开启", "info");
+    notifyPopupStatus();
+  }
+
+  function stopYouTubeCaptions() {
+    if (!captionSession) return;
+    captionSession.observer.disconnect();
+    clearTimeout(captionSession.timer);
+    captionSession.overlay.remove();
+    captionSession = null;
+  }
+
+  function renderYouTubeCaptions() {
+    const session = captionSession;
+    if (!session) return;
+    const mode = state.displayMode;
+    session.overlay.textContent = mode === Utils.DISPLAY_MODES.translationOnly
+      ? session.translation : [session.text, session.translation].filter(Boolean).join("\n");
+    // Native captions provide original mode; never alter their nodes or styles.
+    session.overlay.hidden = mode === Utils.DISPLAY_MODES.original || !session.overlay.textContent;
+  }
+
+  function readYouTubeCaptions(session) {
+    if (session !== captionSession || checkSpaNavigation()) return;
+    const cc = session.player.querySelector(".ytp-subtitles-button");
+    const text = cc?.getAttribute("aria-pressed") === "false" ? "" :
+      [...session.player.querySelectorAll(".ytp-caption-segment")]
+        .filter((node) => !hasHiddenAncestor(node) && node.getClientRects().length)
+        .map((node) => node.textContent).join(" ").replace(/\s+/gu, " ").trim();
+    if (text === session.text) return;
+    session.text = text;
+    session.translation = "";
+    session.ready = "";
+    clearTimeout(session.timer);
+    renderYouTubeCaptions();
+    if (!text) {
+      session.firstChange = 0;
+      return;
+    }
+    // Quiet-time debounce folds karaoke word updates into a cue. A bounded
+    // wait still translates rolling captions that never reach punctuation.
+    if (!session.firstChange) session.firstChange = Date.now();
+    const delay = Math.min(/[.!?。！？]$/u.test(text) ? 250 : 650,
+      Math.max(0, 1800 - (Date.now() - session.firstChange)));
+    session.timer = setTimeout(() => {
+      session.firstChange = 0;
+      session.ready = session.text;
+      void translateYouTubeCaption(session);
+    }, delay);
+  }
+
+  async function translateYouTubeCaption(session) {
+    if (session !== captionSession || session.busy || !session.ready || checkSpaNavigation()) return;
+    const text = session.ready;
+    session.ready = "";
+    session.busy = true;
+    try {
+      let translated = getCachedTranslation(text, session.settings);
+      if (!translated) {
+        const result = await requestSegmentTranslations([text], session.runId, session.settings);
+        translated = result?.[0];
+        if (typeof translated !== "string" || !translated.trim()) {
+          if (session !== captionSession) return;
+          throw new Error("字幕翻译返回空结果");
+        }
+        if (session === captionSession) setCachedTranslation(text, translated, session.settings);
+      }
+      if (session !== captionSession || checkSpaNavigation()) return;
+      if (session.text === text) {
+        session.translation = translated;
+        renderYouTubeCaptions();
+      }
+    } catch (error) {
+      if (session === captionSession) showToast(error.message || "字幕翻译失败", "error");
+    } finally {
+      session.busy = false;
+      if (session === captionSession && session.ready) void translateYouTubeCaption(session);
+    }
+  }
+
   async function startTranslation(options) {
+    if (Utils.isYouTubeWatchUrl(location.href)) {
+      startYouTubeCaptions(options);
+      return;
+    }
+    stopYouTubeCaptions();
     const provider = options.provider === "kimi" ? "kimi" : "deepseek";
     const targetLanguage = options.targetLanguage || "zh-CN";
     const model = Utils.migrateModelName(options.model) || "deepseek-flash";
@@ -509,6 +636,7 @@
   }
 
   function restoreOriginal(options = {}) {
+    stopYouTubeCaptions();
     const abandonedRunId = generation;
     generation += 1;
     // Drop the cancelled run's queue tail — a fresh startTranslation chained on
@@ -583,6 +711,11 @@
   }
 
   function handleSpaNavigation() {
+    if (captionSession) {
+      restoreOriginal({ silent: true });
+      notifyPopupStatus();
+      return;
+    }
     if (!state.active) {
       // Fresh documents/tabs start inactive — no auto-translate there. This
       // handler only continues a session the user started in this tab.
@@ -946,6 +1079,9 @@
   // (collectRawTextNodes) so neither path can pick it up.
   function isNonTranslatableScope(parent) {
     if (!parent) {
+      return true;
+    }
+    if (parent.closest(".ytp-caption-window-container")) {
       return true;
     }
     // <time> holds timestamps ("Oct 12", "2h"); translating them glues
@@ -1970,6 +2106,7 @@
     // display attribute depends on its rules.
     ensureTranslatorStyles();
     document.documentElement.setAttribute("data-kilocean-display", Utils.normalizeDisplayMode(mode));
+    renderYouTubeCaptions();
   }
 
   function ensureTranslatorStyles() {
@@ -2100,6 +2237,10 @@
   }
 
   function isIgnoredTranslatorMutation(node) {
+    const captionNode = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+    if (captionNode?.closest?.(".ytp-caption-window-container")) {
+      return true;
+    }
     if (isExtensionOwnedNode(node)) {
       return true;
     }
@@ -2305,6 +2446,10 @@
 
       let queuedDynamicWork = false;
       for (const record of records) {
+        const target = record.target?.nodeType === Node.ELEMENT_NODE ? record.target : record.target?.parentElement;
+        if (target?.closest?.(".ytp-caption-window-container")) {
+          continue;
+        }
         if (record.type === "childList") {
           if (record.removedNodes.length > 0) {
             // Head replacement / style pruning disconnects our <style> without
@@ -2427,6 +2572,7 @@
   // (display-mode toggling / export / later retry keep working), and the
   // translation cache survives so a retry never re-bills finished segments.
   function stopTranslation() {
+    stopYouTubeCaptions();
     if (!state.active) {
       return;
     }

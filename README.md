@@ -75,3 +75,5 @@ Agent 简报：[`AGENTS.md`](AGENTS.md)。
 ## 许可
 
 个人 / 团队维护中。Issues / PR 欢迎。
+
+YouTube 字幕 MVP：在 watch 页面先开启原生 CC，再点击「翻译此页」，即可在播放器内显示双语字幕（复用显示模式）；切换视频后需重新点击。
