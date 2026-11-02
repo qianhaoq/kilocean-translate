@@ -10039,18 +10039,18 @@ async function checkPackGetUrlReferences() {
 
 function checkVersionBump() {
   const manifest = readJson("manifest.json");
-  if (manifest && manifest.version !== "1.5.0") {
-    fail(`manifest.version must be 1.5.0 for this release, got ${JSON.stringify(manifest.version)}`);
+  if (manifest && manifest.version !== "1.5.1") {
+    fail(`manifest.version must be 1.5.1 for this release, got ${JSON.stringify(manifest.version)}`);
   }
 
   const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
-  if (!readme.includes("1.5.0")) {
-    fail("README.md: version hint must mention 1.5.0");
+  if (!readme.includes("1.5.1")) {
+    fail("README.md: version hint must mention 1.5.1");
   }
 
   const content = fs.readFileSync(path.join(ROOT, "content.js"), "utf8");
-  if (!content.includes("Kilocean Translate 1.5.0")) {
-    fail("content.js: export generator meta must carry the extension version 1.5.0");
+  if (!content.includes("Kilocean Translate 1.5.1")) {
+    fail("content.js: export generator meta must carry the extension version 1.5.1");
   }
 }
 
