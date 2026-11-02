@@ -13,6 +13,8 @@ PR: #___
 
 ## 测试点 / Test Points
 
+1.5.1 发布说明（基于 #41）：YouTube 观看页原生 CC 跟译，播放器 overlay 只显示译文（原生英文 CC 不动）；手势触发；不扩权限 / host。
+
 - [ ] 核心用户路径可用 / Main user path works end to end
 - [ ] 本 PR 变更的行为按预期生效 / Behavior changed in this PR matches expectations
 - [ ] 回归：相邻功能未被破坏 / Regression: adjacent features unbroken

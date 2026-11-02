@@ -743,8 +743,8 @@ return {
   if (!contentRaw.includes("还没有配置 API Key")) {
     fail("content.js: the key-gate bubble must render the friendly “还没有配置 API Key” copy");
   }
-  if (!contentRaw.includes("Kilocean Translate 1.5.0")) {
-    fail("content.js: export generator meta must carry Kilocean Translate 1.5.0");
+  if (!contentRaw.includes("Kilocean Translate 1.5.1")) {
+    fail("content.js: export generator meta must carry Kilocean Translate 1.5.1");
   }
 }
 
