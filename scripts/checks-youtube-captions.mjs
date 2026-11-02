@@ -65,7 +65,8 @@ export async function checkYouTubeCaptions(ROOT) {
   assert.equal(requests.length, 2, "newest stable cue follows the in-flight request");
   requests[1].resolve(["下一句"]);
   await settle();
-  assert.equal(overlay.textContent, "Next sentence.\n下一句");
+  // Overlay shows the translation only in every non-original mode.
+  assert.equal(overlay.textContent, "下一句");
   context.state.displayMode = "translation-only";
   context.renderYouTubeCaptions();
   assert.equal(overlay.textContent, "下一句");
@@ -142,7 +143,7 @@ export async function checkYouTubeCaptions(ROOT) {
   advance(400); await settleRolling();
   assert.equal(
     rollingOverlay.textContent,
-    "The quick brown fox jumps\n译（The quick brown）",
+    "译（The quick brown）",
     "prefix translation renders while the cue keeps rolling"
   );
   liveText = "The quick brown fox jumps over";
@@ -157,7 +158,7 @@ export async function checkYouTubeCaptions(ROOT) {
   advance(400); await settleRolling();
   assert.equal(
     rollingOverlay.textContent,
-    "The quick brown fox jumps over\n译（The quick brown fox jumps over）",
+    "译（The quick brown fox jumps over）",
     "longer translation replaces the prefix one without regress"
   );
   liveText = "The quick brown fox jumps over the lazy dog.";
@@ -172,7 +173,7 @@ export async function checkYouTubeCaptions(ROOT) {
   advance(400); await settleRolling();
   assert.equal(
     rollingOverlay.textContent,
-    "The quick brown fox jumps over the lazy dog.\n译（The quick brown fox jumps over the lazy dog.）",
+    "译（The quick brown fox jumps over the lazy dog.）",
     "final translation is displayed"
   );
 
@@ -185,14 +186,14 @@ export async function checkYouTubeCaptions(ROOT) {
   readRolling(); await settleRolling();
   assert.equal(
     rollingOverlay.textContent,
-    "The quick brown\n译（The quick brown）",
+    "译（The quick brown）",
     "cached cue renders immediately while busy"
   );
   assert.equal(sent.length, 4, "cached seek sends no new request");
   advance(400); await settleRolling();
   assert.equal(
     rollingOverlay.textContent,
-    "The quick brown\n译（The quick brown）",
+    "译（The quick brown）",
     "unrelated late response cannot replace the cached seek"
   );
   assert.equal(rollingCache.has("A completely different sentence."), true, "unrelated cue still warms the LRU");

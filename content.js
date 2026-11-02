@@ -413,11 +413,11 @@
   function renderYouTubeCaptions() {
     const session = captionSession;
     if (!session) return;
-    const mode = state.displayMode;
-    session.overlay.textContent = mode === Utils.DISPLAY_MODES.translationOnly
-      ? session.translation : [session.text, session.translation].filter(Boolean).join("\n");
+    // The overlay shows the translation only; the original text stays on the
+    // native `.ytp-caption-segment` CC, which this code never alters.
+    session.overlay.textContent = session.translation;
     // Native captions provide original mode; never alter their nodes or styles.
-    session.overlay.hidden = mode === Utils.DISPLAY_MODES.original || !session.overlay.textContent;
+    session.overlay.hidden = state.displayMode === Utils.DISPLAY_MODES.original || !session.overlay.textContent;
   }
 
   // True when `current` is the same caption unit as `previous` — identical, a
