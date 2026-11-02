@@ -355,8 +355,10 @@
     return false;
   });
 
-  // Caption requests are serialized; while one is pending only the newest
-  // stable visible cue is retained. Late results may warm the LRU, never the UI.
+  // Caption requests are serialized; rolling cues keep the already-shown
+  // (shorter-snapshot) translation visible while a longer one is requested,
+  // and seeks back to translated cues render the cached hit immediately. A
+  // truly unrelated late result only warms the LRU — never the UI.
   function startYouTubeCaptions(options) {
     restoreOriginal({ silent: true });
     lastSeenUrl = location.href;
@@ -382,7 +384,7 @@
     player.appendChild(overlay);
     const session = {
       player, overlay, runId: generation, settings: { ...activeRunSettings },
-      text: "", translation: "", ready: "", busy: false, timer: null,
+      text: "", translation: "", translationSource: "", ready: "", busy: false, timer: null,
       firstChange: 0, observer: null
     };
     captionSession = session;
@@ -418,6 +420,18 @@
     session.overlay.hidden = mode === Utils.DISPLAY_MODES.original || !session.overlay.textContent;
   }
 
+  // True when `current` is the same caption unit as `previous` — identical, a
+  // pure growth of it, or a growth of its de-punctuated stem. YouTube karaoke
+  // captions roll by appending words to the visible cue, so treating the
+  // longer text as the same cue lets the already-shown translation survive
+  // the update instead of blanking on every word tick.
+  function extendsCaptionUnit(previous, current) {
+    if (!previous || !current) return false;
+    const stem = previous.replace(/[.!?。！？]+$/u, "");
+    return current === previous || current.startsWith(previous) ||
+      (stem && (current === stem || current.startsWith(stem)));
+  }
+
   function readYouTubeCaptions(session) {
     if (session !== captionSession || checkSpaNavigation()) return;
     const cc = session.player.querySelector(".ytp-subtitles-button");
@@ -426,11 +440,37 @@
         .filter((node) => !hasHiddenAncestor(node) && node.getClientRects().length)
         .map((node) => node.textContent).join(" ").replace(/\s+/gu, " ").trim();
     if (text === session.text) return;
-    session.text = text;
-    session.translation = "";
-    session.ready = "";
+    const previousText = session.text;
     clearTimeout(session.timer);
-    renderYouTubeCaptions();
+    // Seek (or any switch) to a cue whose translation is already cached:
+    // render it at once — even while another request is in flight — so a
+    // seek never waits behind the serialized queue nor re-bills.
+    const cached = text ? getCachedTranslation(text, session.settings) : null;
+    if (cached) {
+      session.text = text;
+      session.translation = cached;
+      session.translationSource = text;
+      session.ready = "";
+      session.firstChange = 0;
+      renderYouTubeCaptions();
+      return;
+    }
+    if (extendsCaptionUnit(previousText, text)) {
+      // Rolling caption unit (karaoke word appends): the translation already
+      // on screen describes a shorter snapshot of this same cue — keep it
+      // visible while the debounce below schedules a fresh request for the
+      // longer text, instead of blanking on every word tick.
+      session.text = text;
+      session.ready = "";
+      renderYouTubeCaptions();
+    } else {
+      // Brand-new cue: the shown translation no longer matches anything.
+      session.text = text;
+      session.translation = "";
+      session.translationSource = "";
+      session.ready = "";
+      renderYouTubeCaptions();
+    }
     if (!text) {
       session.firstChange = 0;
       return;
@@ -461,11 +501,22 @@
           if (session !== captionSession) return;
           throw new Error("字幕翻译返回空结果");
         }
+        // Warm the LRU regardless of what is on screen now: a seek back to
+        // this exact cue must hit the cache instead of re-billing.
         if (session === captionSession) setCachedTranslation(text, translated, session.settings);
       }
       if (session !== captionSession || checkSpaNavigation()) return;
-      if (session.text === text) {
+      // Show the result when the visible cue is (a growth of) the requested
+      // snapshot: rolling cues keep the stale-but-closer prefix translation
+      // on screen instead of blanking until the longer request lands. Never
+      // regress, though — when the cue has already grown past this snapshot
+      // into a longer displayed translation, the longer one stays.
+      const shownSource = session.translationSource;
+      const shownCoversMore = Boolean(shownSource) && shownSource !== text &&
+        shownSource.length > text.length && extendsCaptionUnit(text, shownSource);
+      if (extendsCaptionUnit(text, session.text) && !shownCoversMore) {
         session.translation = translated;
+        session.translationSource = text;
         renderYouTubeCaptions();
       }
     } catch (error) {
