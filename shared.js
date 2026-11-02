@@ -378,6 +378,17 @@
       host.endsWith(".x.com") || host.endsWith(".twitter.com");
   }
 
+  function isYouTubeWatchUrl(value) {
+    try {
+      const url = new URL(value);
+      return url.protocol === "https:" &&
+        (url.hostname === "youtube.com" || url.hostname.endsWith(".youtube.com")) &&
+        url.pathname === "/watch" && Boolean(url.searchParams.get("v"));
+    } catch {
+      return false;
+    }
+  }
+
   function preserveWhitespace(original, translated) {
     const leading = original.match(/^\s*/u)?.[0] || "";
     const trailing = original.match(/\s*$/u)?.[0] || "";
@@ -963,6 +974,7 @@
     isSameTranslation,
     isSkippableText,
     isXHost,
+    isYouTubeWatchUrl,
     preserveWhitespace,
     orderSegmentsByViewport,
     chunkSegments,

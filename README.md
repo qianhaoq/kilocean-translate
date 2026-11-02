@@ -75,3 +75,5 @@ Agent 简报：[`AGENTS.md`](AGENTS.md)。
 ## 许可
 
 个人 / 团队维护中。Issues / PR 欢迎。
+
+YouTube 字幕 MVP：在 watch 页面先开启原生 CC，再点击「翻译此页」，即可在播放器内 overlay 显示译文（原生 CC 继续提供原文，overlay 始终只显示译文；弹窗「原文」模式下隐藏 overlay）。卡拉OK式滚动加词会保留同一字幕单元上的在途/已显示译文，seek 回已缓存字幕会立刻复用 LRU；切换视频后需重新点击。

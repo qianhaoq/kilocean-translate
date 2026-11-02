@@ -10340,6 +10340,8 @@ async function main() {
   await checkTotalDeadlineBudget();
   await checkTabConcurrencyAndNavigationCancel();
   checkTranslationReuseCache();
+  const { checkYouTubeCaptions } = await import("./checks-youtube-captions.mjs");
+  await checkYouTubeCaptions(ROOT);
   await checkCommandsAndContextMenu();
   await checkWelcomeSampleTranslate();
   await checkKeyVerifierGate();
