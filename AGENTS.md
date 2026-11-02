@@ -37,6 +37,8 @@ No package.json. Load unpacked extension from repo root in chrome://extensions.
 ## Merge policy (hard gates)
 
 Human merge is **optional** only when every auto-merge gate passes. Copilot often submits `COMMENTED`, not `APPROVED` — do not require `APPROVED`. `.github/workflows/auto-merge.yml` squash-merges into `main` only if a successful **ci / Build & Test check run** exists on the head SHA (fail closed if missing), **`ci / Secret Scan` succeeded**, **`codex / Codex Review Gate` succeeded**, **`qa / QA Gate` succeeded** (label `qa-passed`), and Copilot is satisfied: Copilot has reviewed the PR **at least once, on any commit** (`copilot_scope: any`; Copilot is requested only on opened / ready_for_review and there is no per-push re-review), and the latest Copilot review is not `CHANGES_REQUESTED`. Head-SHA freshness comes from the Codex Gate, CI and QA. Repo variable `DISABLE_COPILOT_REVIEW=true` turns off both the request and this requirement. **Blocking threads:** unresolved non-Codex threads, plus unresolved Codex **P0/P1 (or unlabeled)**; pure Codex **P2 may stay open**. A PR that Copilot never reviewed does not auto-merge. Codex Gate runs from trusted base-branch workflow code via `pull_request_target` (API-only github-script; read-only permissions; never checkout PR head). Codex success 只能来自同名真 gate job 的结论；无关标签 ack 可经 Checks API 镜像同名真 job 的已有结论（且须标签状态校验通过），禁止无源合成 success / 禁止 Auto Merge dispatch; Auto Merge listens via `workflow_run`. Merge is pinned to the evaluated head SHA. To block auto-merge, add label `no-auto-merge` or keep the PR as draft. Label `skip-codex-gate` is a manual/admin escape hatch only: Gate **fails** (never success) and must not dispatch Auto Merge. See `docs/MERGE_GATES.md`.
+**Green → product-owner merge (2026-11-02):** after required checks are green and P0/P1 are cleared, the product owner may Approve/squash or let auto-merge run — **do not wait for 钱浩**. If GitHub “≥1 approving review from someone with write access” blocks self-Approve: product owner/agent may (1) temporarily set `main` `required_approving_review_count` to `0`, (2) squash-merge, (3) **restore to `1` immediately**. No `--admin` bypass; P0/P1 must still be clear. Steady state stays at `1` — never leave it at `0`.
+
 
 **Never merge on Build alone.** Hard gates: ci / Build & Test + ci / Secret Scan + qa / QA Gate (`qa-passed`) + codex / Codex Review Gate (summary covers head + 0 unresolved Codex **P0/P1 or unlabeled** threads; pure P2 OK) + blocking conversation resolution (non-Codex all; Codex P0/P1/unlabeled). Auto-merge needs one Copilot review on any commit (no head-SHA Copilot check); still never Build-only.
 
@@ -51,14 +53,15 @@ Cloud setup: Node 20 only; prefer node scripts/ci-check.mjs.
 
 把事情交给下一个 bot 时，必须单聊点名并叫醒对方，光在群里说「可以合了」不算交接。门禁转绿时，专业研发单聊通知产品 bot 和专业测试；专业测试打上 `qa-passed` 后，单聊通知产品 bot；产品 bot 合入或发布后，单聊通知专业研发。
 
-## Coding 工具顺序（2026-10-20 起）
+## Coding 工具顺序（2026-11-02 起）
 
 **适用范围（写死）**：下列 Codex / `coding` / `/home/box/.../codex-quota.sh` 顺序**仅**适用于已预装这些工具的**本机或 `/home/box` 工作站**。Copilot cloud、仅 Node·npm 的云端 agent、以及任何未预装 Codex/`coding` 的环境：**必须按该环境已有工具执行**；**严禁**把本机/box 工具序、`codex`/`coding` 或 `/home/box` 路径当作云端硬性要求。
 
-1. **（本机/box）默认用 Codex CLI**（ChatGPT 账号登录），模型 `gpt-6.1-sol`（`~/.codex/config.toml`）。
-2. **周额度用完后继续用 credits** 跑 Codex；**credits 也用完**再切：`coding glm`（一般代码）/ `coding kimi`（前端/交互/UI）。
-3. 查额度（仅本机/box）：`/home/box/.coding-plans/codex-quota.sh`（退出码 0=继续 Codex，1=切 glm/kimi，2=未知；`--json`、`--probe`），或 Codex TUI 内 `/status`。云端无此脚本时跳过。
-4. 凭证 `~/.codex/auth.json` 及任何 API key **绝不打印、外传或提交**；`.codex/`、`auth.json` 已在 `.gitignore`。
+1. **（本机/box）优先用 Codex CLI**（ChatGPT 账号登录），模型 `gpt-6.1-sol`（`~/.codex/config.toml`）；出口优先 box（美区）。
+2. **Codex 不可用**（区域 403 / 额度与 credits 耗尽 / 鉴权失败等）再切：`coding glm`（一般代码）/ `coding kimi`（前端/交互/UI）。
+3. **不默认 Cursor Cloud Agent**（Cloud 上 OpenAI/Codex 常不可用；真要开只能选非 OpenAI 模型，一般不必）。
+4. 查额度（仅本机/box）：`/home/box/.coding-plans/codex-quota.sh`（退出码 0=继续 Codex，1=切 glm/kimi，2=未知；`--json`、`--probe`），或 Codex TUI 内 `/status`。云端无此脚本时跳过。
+5. 凭证 `~/.codex/auth.json` 及任何 API key **绝不打印、外传或提交**；`.codex/`、`auth.json` 已在 `.gitignore`。
 
 ## 测试与门禁（禁止弱化凑绿）
 
