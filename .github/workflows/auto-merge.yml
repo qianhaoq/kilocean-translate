@@ -79,10 +79,7 @@ jobs:
         qa / QA Gate
         understand / Diff Quiz Gate
       merge_method: squash
-      # Copilot is requested once per PR (ai-review: opened / ready_for_review),
-      # never per push, so require "reviewed at least once, on any commit"
-      # (copilot_scope: any). Per-head freshness = Codex gate + CI + QA.
-      # Same switch as ai-review: repo var DISABLE_COPILOT_REVIEW=true turns
-      # off both the request and this requirement.
-      require_copilot: ${{ vars.DISABLE_COPILOT_REVIEW != 'true' }}
+      # Copilot is retired as a merge gate. DISABLE_COPILOT_REVIEW=true
+      # is already set operationally; require_copilot: false is the durable default.
+      require_copilot: false
       copilot_scope: any
