@@ -2624,3 +2624,13 @@ function toFriendlyPageError(error) {
   }
   return message;
 }
+
+// Separate from the existing text/YouTube translation action.
+document.getElementById("manga-start").addEventListener("click", whenReady(async () => {
+  try {
+    await saveSettings();
+    await chrome.scripting.executeScript({ target: { tabId: currentTab.id }, files: ["shared.js", "manga-content.js"] });
+    await chrome.tabs.sendMessage(currentTab.id, { type: "MANGA_START" });
+    window.close();
+  } catch (error) { setStatus("无法框选翻译", toFriendlyPageError(error), "error"); }
+}));

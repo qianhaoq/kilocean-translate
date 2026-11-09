@@ -946,7 +946,63 @@
     };
   }
 
+  // Pixel-space boxes only; uncertain regions preserve the original pixels.
+  function mangaBox(b, width, height) {
+    if (!b || !Array.isArray(b.bbox) || b.bbox.length !== 4 ||
+        !b.bbox.every(Number.isFinite) || !Number.isFinite(b.confidence) || b.confidence < .9 ||
+        typeof b.translation !== "string" || !b.translation.trim() || b.translation.length > 300) return null;
+    const [x0,y0,x1,y1] = b.bbox;
+    if (x0 < -2 || y0 < -2 || x1 > width + 2 || y1 > height + 2) return null;
+    const box = [Math.max(0, Math.floor(x0)), Math.max(0, Math.floor(y0)), Math.min(width, Math.ceil(x1)), Math.min(height, Math.ceil(y1))];
+    const w = box[2]-box[0], h = box[3]-box[1];
+    return w >= 12 && h >= 12 && w*h <= width*height*.25 ? box : null;
+  }
+  function mangaWhiteRegion(data, width, height) {
+    let white = 0;
+    for (let y=0; y<height; y++) for (let x=0; x<width; x++) {
+      const i=(y*width+x)*4;
+      const near = data[i]>=240 && data[i+1]>=240 && data[i+2]>=240 && data[i+3]===255;
+      if (near) white++;
+      // Require a white perimeter: avoid cutting into bubble outlines/art.
+      if ((x<2 || y<2 || x>=width-2 || y>=height-2) && !near) return false;
+    }
+    return white/(width*height) >= .88;
+  }
+  async function mangaHash(value) {
+    const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+    return Array.from(new Uint8Array(digest), x=>x.toString(16).padStart(2,"0")).join("");
+  }
+  function mangaDraw(ctx, bubbles, width, height) {
+    let painted=0;
+    const paintedBoxes=[];
+    for (const b of bubbles) {
+      const box=mangaBox(b,width,height);
+      if (!box) continue;
+      const [x,y,right,bottom]=box, w=right-x,h=bottom-y;
+      if (paintedBoxes.some(([a,b,c,d])=>x<c && right>a && y<d && bottom>b)) continue;
+      if (!mangaWhiteRegion(ctx.getImageData(x,y,w,h).data,w,h)) continue;
+      const chars=Array.from(b.translation.trim());
+      let size= Math.min(28,Math.floor(h/2)), lines;
+      for (;size>=10;size--) {
+        ctx.font=`${size}px sans-serif`; lines=[""];
+        for (const c of chars) {
+          if (c === "\n" || ctx.measureText(lines[lines.length-1]+c).width > w-8) lines.push(c === "\n" ? "" : c);
+          else lines[lines.length-1]+=c;
+        }
+        if (lines.length*size*1.25 <= h-8 && lines.every(line=>ctx.measureText(line).width<=w-8)) break;
+      }
+      if (size<10) continue;
+      ctx.fillStyle="#fff"; ctx.fillRect(x,y,w,h);
+      ctx.fillStyle="#111"; ctx.textAlign="center"; ctx.textBaseline="middle";
+      lines.forEach((line,i)=>ctx.fillText(line,x+w/2,y+h/2+(i-(lines.length-1)/2)*size*1.25));
+      paintedBoxes.push(box);
+      painted++;
+    }
+    return painted;
+  }
+
   return {
+    mangaBox, mangaWhiteRegion, mangaHash, mangaDraw,
     DISPLAY_MODES,
     TARGET_LANGUAGE_NAMES,
     X_TRANSLATABLE_SELECTOR,
