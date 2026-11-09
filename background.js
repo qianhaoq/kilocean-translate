@@ -261,7 +261,7 @@ chrome.runtime.onStartup.addListener(async () => {
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-  withdrawManga(tabId);
+  void withdrawManga(tabId).catch(()=>{});
   void clearPendingSelection(tabId);
   cancelledContentRuns.delete(tabId);
   lastTabUrls.delete(tabId);
@@ -272,7 +272,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.status === "loading" || changeInfo.url) {
     const token=mangaSessions.get(tabId)?.token;
     if (token) chrome.tabs.sendMessage(tabId,{type:"MANGA_INVALIDATE",token}).catch(()=>{});
-    withdrawManga(tabId);
+    void withdrawManga(tabId).catch(()=>{});
   }
   // Same-tab navigation destroys the content script; drop stale pending
   // selection + badge so the popup cannot confirm against a new document.
@@ -532,25 +532,76 @@ async function handleWelcomeSampleTranslate(message, sender) {
   return translations[0];
 }
 
-// Ephemeral session/crop cache; navigation and retrigger withdraw old requests.
+// Only metadata survives worker suspension; images, keys and OCR stay ephemeral.
 const mangaSessions = new Map();
 const mangaCache = new Map();
+const MANGA_SESSION_TTL_MS = 20 * 60 * 1000;
+const mangaStateWrites = new Map();
+const mangaStateVersions = new Map();
+function mangaSessionKey(tabId) { return `mangaSession:${tabId}`; }
+function queueMangaState(tabId, operation) {
+  const pending=(mangaStateWrites.get(tabId) || Promise.resolve()).then(operation);
+  const settled=pending.catch(()=>{});
+  mangaStateWrites.set(tabId,settled);
+  void settled.then(()=>{if(mangaStateWrites.get(tabId)===settled)mangaStateWrites.delete(tabId);});
+  return pending;
+}
+function mangaMetadata(session) {
+  return {token:session.token,used:session.used,createdAt:session.createdAt};
+}
 function withdrawManga(tabId) {
+  mangaStateVersions.set(tabId,(mangaStateVersions.get(tabId)||0)+1);
   mangaSessions.get(tabId)?.controller?.abort();
   mangaSessions.delete(tabId);
+  return queueMangaState(tabId,()=>chrome.storage.session.remove(mangaSessionKey(tabId)));
+}
+function loadMangaSession(tabId) {
+  const version=mangaStateVersions.get(tabId);
+  return queueMangaState(tabId,async()=>{
+    let session=mangaSessions.get(tabId);
+    if (!session) {
+      const key=mangaSessionKey(tabId), stored=await chrome.storage.session.get(key);
+      if (mangaStateVersions.get(tabId)!==version) throw new Error("选区已失效");
+      const metadata=stored?.[key];
+      if (metadata) session={...mangaMetadata(metadata),controller:new AbortController()};
+    }
+    if (!session) throw new Error("选区已失效");
+    if (typeof session.token!=="string" || typeof session.used!=="boolean" ||
+        !Number.isFinite(session.createdAt) || session.createdAt>Date.now() ||
+        Date.now()-session.createdAt>=MANGA_SESSION_TTL_MS) {
+      session.controller.abort(); mangaSessions.delete(tabId);
+      await chrome.storage.session.remove(mangaSessionKey(tabId));
+      throw new Error("选区已过期，请重新框选");
+    }
+    mangaSessions.set(tabId,session);
+    return session;
+  });
 }
 async function mangaMessage(message, sender) {
   const tabId=sender.tab?.id;
   if (!Number.isInteger(tabId) || sender.frameId !== 0) throw new Error("无效漫画请求");
   if (message.type === "MANGA_BEGIN") {
-    withdrawManga(tabId);
-    const token=crypto.randomUUID();
-    mangaSessions.set(tabId,{token, controller:new AbortController(), used:false});
-    return {ok:true, token};
+    const version=(mangaStateVersions.get(tabId)||0)+1;
+    await withdrawManga(tabId);
+    return queueMangaState(tabId,async()=>{
+      if(mangaStateVersions.get(tabId)!==version) throw new Error("选区已失效");
+      mangaSessions.get(tabId)?.controller.abort();
+      const session={token:crypto.randomUUID(),used:false,createdAt:Date.now(),controller:new AbortController()};
+      mangaSessions.set(tabId,session);
+      try {
+        await chrome.storage.session.set({[mangaSessionKey(tabId)]:mangaMetadata(session)});
+        if (mangaSessions.get(tabId)!==session) throw new Error("选区已失效");
+        return {ok:true,token:session.token};
+      } catch(error) {
+        session.controller.abort();
+        if(mangaSessions.get(tabId)===session)mangaSessions.delete(tabId);
+        throw error;
+      }
+    });
   }
-  const session=mangaSessions.get(tabId);
-  if (!session || session.token !== message.token) throw new Error("选区已失效");
-  if (message.type === "MANGA_CANCEL") { withdrawManga(tabId); return {ok:true}; }
+  const session=await loadMangaSession(tabId);
+  if (session.token !== message.token) throw new Error("选区已失效");
+  if (message.type === "MANGA_CANCEL") { await withdrawManga(tabId); return {ok:true}; }
   // Hash in the secure worker: HTTP content worlds may have no crypto.subtle.
   if (message.type === "MANGA_HASH") {
     if (typeof message.layout!=="string" || message.layout.length>1000000 ||
@@ -572,7 +623,11 @@ async function mangaMessage(message, sender) {
       typeof message.image !== "string" || !/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(message.image) || message.image.length>16000000 ||
       !Number.isInteger(message.width) || !Number.isInteger(message.height) || message.width<16 || message.height<16 || message.width*message.height>16000000 ||
       typeof message.layout !== "string" || message.layout.length>300) throw new Error("无效选区");
-  session.used=true;
+  await queueMangaState(tabId,async()=>{
+    if (mangaSessions.get(tabId)!==session || session.used || session.controller.signal.aborted) throw new Error("选区已失效");
+    session.used=true;
+    await chrome.storage.session.set({[mangaSessionKey(tabId)]:mangaMetadata(session)});
+  });
   const hash=await DeepSeekTranslatorUtils.mangaHash(message.image+message.layout);
   if (hash !== message.hash) throw new Error("选区校验失败");
   const current=()=>mangaSessions.get(tabId)===session && !session.controller.signal.aborted;

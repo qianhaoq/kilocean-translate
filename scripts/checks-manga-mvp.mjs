@@ -113,12 +113,18 @@ export async function checkMangaMvp(root) {
   // Isolate the real worker handler with inert browser hooks; no network/keys.
   const source=fs.readFileSync(root+'/background.js','utf8');
   const section=source.slice(source.indexOf('const mangaSessions'),source.indexOf('chrome.runtime.onMessage.addListener'));
+  const sessionStorage={};
+  const sessionApi={
+    get:async key=>structuredClone({[key]:sessionStorage[key]}),
+    set:async values=>Object.assign(sessionStorage,structuredClone(values)),
+    remove:async key=>{delete sessionStorage[key];}
+  };
   const sandbox={crypto:webcrypto,TextEncoder,AbortController,setTimeout,clearTimeout,
     DeepSeekTranslatorUtils:{...U,fetchWithTimeout:(...args)=>sandbox.fetch(...args),mangaHash:async s=>Buffer.from(await webcrypto.subtle.digest('SHA-256',new TextEncoder().encode(s))).toString('hex')},
     loadSettings:async()=>({deepseekApiKey:'fixture-only',targetLanguage:'zh-CN'}),
     fetch:async(...args)=>{requests++;return responder(...args);},
-    chrome:{tabs:{onRemoved:{addListener(){}},onUpdated:{addListener(){}},query:async()=>[{id:1}],captureVisibleTab:async()=> 'data:image/png;base64,AA=='}}};
-  vm.createContext(sandbox);vm.runInContext(section+'\nglobalThis.handler=mangaMessage;globalThis.cache=mangaCache;',sandbox);
+    chrome:{storage:{session:sessionApi},tabs:{onRemoved:{addListener(){}},onUpdated:{addListener(){}},query:async()=>[{id:1}],captureVisibleTab:async()=> 'data:image/png;base64,AA=='}}};
+  vm.createContext(sandbox);vm.runInContext(section+'\nglobalThis.handler=mangaMessage;globalThis.cache=mangaCache;globalThis.sessions=mangaSessions;',sandbox);
   const sender={tab:{id:1,windowId:2},frameId:0};
   const call=m=>sandbox.handler(m,sender);
   const begin=()=>call({type:'MANGA_BEGIN'});
@@ -152,7 +158,7 @@ export async function checkMangaMvp(root) {
   }
   assert.equal(sandbox.cache.size,8,'bounded cache');
   const notifications=[];
-  sandbox.chrome={tabs:{sendMessage:async(id,message)=>notifications.push({id,message})}};
+  sandbox.chrome={storage:{session:sessionApi},tabs:{sendMessage:async(id,message)=>notifications.push({id,message})}};
   sandbox.tabId=1; sandbox.changeInfo={url:'http://reader.test/next'};
   ({token}=await begin());
   // Execute the real worker URL-change branch, including its invalidation notice.
@@ -168,6 +174,60 @@ export async function checkMangaMvp(root) {
   const invalid=await call({...message(token),layout:'uncertain',hash:await sandbox.DeepSeekTranslatorUtils.mangaHash(image+'uncertain')});
   assert.equal(invalid.bubbles.length,1,'uncertain OCR entries reach UI for skip reporting');
   assert.equal(sandbox.cache.size,priorCache,'all-uncertain responses are not cached');
+  // MV3 restart retains only metadata, and recreates a fresh controller.
+  sandbox.cache.clear();
+  responder=async()=>({ok:true,json:async()=>({choices:[{message:{content:JSON.stringify({bubbles:[good]})}}]})});
+  ({token}=await begin());
+  const oldController=sandbox.sessions.get(1).controller;
+  assert.deepEqual(Object.keys(sessionStorage['mangaSession:1']).sort(),['createdAt','token','used']);
+  sandbox.sessions.clear();
+  const restoredHash=await call({type:'MANGA_HASH',token,image,layout});
+  assert.equal(restoredHash.hash,await sandbox.DeepSeekTranslatorUtils.mangaHash(image+restoredHash.layout));
+  assert.notEqual(sandbox.sessions.get(1).controller,oldController,'restart rebuilds controller');
+  const beforeRestartFetch=requests;
+  await assert.rejects(call({...message(token),confirmed:false}));
+  assert.equal(requests,beforeRestartFetch,'restored session still requires consent');
+  sandbox.sessions.clear();
+  await call(message(token));
+  assert.equal(requests,beforeRestartFetch+1,'translate succeeds after worker memory loss');
+  assert.equal(sessionStorage['mangaSession:1'].used,true,'one-shot claim persisted before fetch');
+  sandbox.sessions.clear();
+  await assert.rejects(call(message(token)));
+  assert.equal(requests,beforeRestartFetch+1,'used session cannot bill again after another restart');
+  const restoredController=sandbox.sessions.get(1).controller;
+  await call({type:'MANGA_CANCEL',token});
+  assert.equal(restoredController.signal.aborted,true,'cancel aborts the live controller');
+  assert.equal(sessionStorage['mangaSession:1'],undefined);
+  assert.equal(sandbox.sessions.has(1),false);
+  await assert.rejects(call({type:'MANGA_HASH',token,image,layout}));
+  ({token}=await begin());
+  sessionStorage['mangaSession:1'].createdAt=Date.now()-21*60*1000;
+  sandbox.sessions.clear();
+  await assert.rejects(call({type:'MANGA_HASH',token,image,layout}),/过期/);
+  assert.equal(sessionStorage['mangaSession:1'],undefined,'expiry removes metadata');
+  assert.equal(sandbox.sessions.has(1),false);
+  ({token}=await begin());
+  sandbox.sessions.clear();
+  await assert.rejects(call({type:'MANGA_HASH',token:'another-token',image,layout}));
+  assert.equal(sessionStorage['mangaSession:1'].token,token,'mismatched token cannot withdraw current binding');
+  // Reload/navigation also removes persisted metadata, even on a memory miss.
+  sandbox.sessions.clear();
+  vm.runInContext(source.slice(navStart,navEnd),sandbox);
+  await assert.rejects(call({type:'MANGA_HASH',token,image,layout}));
+  assert.equal(sessionStorage['mangaSession:1'],undefined);
+  // BEGIN failure is visible in content, without a browser or network.
+  const notes=[];
+  const element=()=>({style:{},setAttribute(){},append(){},remove(){}});
+  let contentListener;
+  const uiSandbox={DeepSeekTranslatorUtils:{createMangaOverlayHider:()=>()=>()=>{}},
+    addEventListener(){},document:{createElement:element,documentElement:{appendChild:note=>notes.push(note)}},
+    chrome:{runtime:{id:'test',sendMessage:async()=>({ok:false,error:'Session storage unavailable'}),onMessage:{addListener:fn=>{contentListener=fn;}}}}};
+  vm.createContext(uiSandbox);
+  vm.runInContext(fs.readFileSync(root+'/manga-content.js','utf8'),uiSandbox);
+  const startFailure=await new Promise(resolve=>contentListener({type:'MANGA_START'},{id:'test'},resolve));
+  assert.equal(startFailure.ok,false);
+  assert.match(notes[0].textContent,/无法启动框选翻译.*Session storage unavailable/);
+  console.log('OK: manga metadata-only session restore, persisted one-shot consent, cancellation/expiry/navigation cleanup, visible BEGIN failure');
   const content=fs.readFileSync(root+'/manga-content.js','utf8');
   assert.match(content,/if\(!event.isTrusted/);
   assert.doesNotMatch(content,/U\.mangaHash/,'HTTP content does not hash with subtle');

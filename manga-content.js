@@ -2,7 +2,7 @@
   if (globalThis.kiloceanMangaInstalled) return;
   globalThis.kiloceanMangaInstalled = true;
   const U = globalThis.DeepSeekTranslatorUtils;
-  let generation=0, host, token;
+  let generation=0, host, token, startNote;
   const hideOverlays=U.createMangaOverlayHider();
   const captureReleases=new Set();
   const send = async message => {
@@ -15,11 +15,22 @@
     for (const release of captureReleases) release();
     captureReleases.clear();
     host?.remove(); host=null;
+    startNote?.remove(); startNote=null;
     if (token) chrome.runtime.sendMessage({type:"MANGA_CANCEL",token}).catch(()=>{});
     token=null;
   }
   function imageFrom(url) {
     return new Promise((resolve,reject)=>{const img=new Image();img.onload=()=>resolve(img);img.onerror=reject;img.src=url;});
+  }
+  function showStartFailure(error) {
+    clear();
+    startNote=document.createElement("div");
+    startNote.setAttribute("data-deepseek-translator-ui","true");
+    startNote.style.cssText="position:fixed;top:16px;right:16px;z-index:2147483647;background:#fff;color:#111;padding:16px;border:1px solid #888;font:14px sans-serif;max-width:360px";
+    startNote.textContent=`无法启动框选翻译：${error.message}；请重新打开扩展重试。`;
+    const dismiss=document.createElement("button");dismiss.textContent="关闭";
+    dismiss.onclick=()=>{startNote?.remove();startNote=null;};startNote.append(dismiss);
+    document.documentElement.appendChild(startNote);
   }
   async function start() {
     clear();
@@ -117,6 +128,11 @@
     // tabs.onUpdated reports detectable pushState/replaceState URL changes.
     if(message?.type==='MANGA_INVALIDATE') { if(message.token===token)clear(); return; }
     if(message?.type!=='MANGA_START')return;
-    start().catch(()=>clear());reply({ok:true});
+    const run=generation+1;
+    start().then(()=>reply({ok:true}),error=>{
+      if (generation===run) showStartFailure(error);
+      reply({ok:false,error:error.message});
+    });
+    return true;
   });
 })();

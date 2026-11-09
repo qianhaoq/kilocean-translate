@@ -17,7 +17,12 @@ const output='/workspace/kt-manga-review';fs.mkdirSync(output,{recursive:true});
 // Never read credentials on the default, offline path.
 const key=live ? fs.readFileSync('/home/box/.secrets/deepseek_api_key','utf8').trim() : '';
 const worker=fs.readFileSync(root+'/background.js','utf8');
-const sandbox={crypto:webcrypto,AbortController,setTimeout,clearTimeout,DeepSeekTranslatorUtils:U,
+const sessionMetadata={};
+const sandbox={chrome:{storage:{session:{
+  get:async key=>({[key]:sessionMetadata[key]}),
+  set:async values=>Object.assign(sessionMetadata,structuredClone(values)),
+  remove:async key=>{delete sessionMetadata[key];}
+}}},crypto:webcrypto,AbortController,setTimeout,clearTimeout,DeepSeekTranslatorUtils:U,
   loadSettings:async()=>({deepseekApiKey:key,targetLanguage:'zh-CN'})};
 vm.createContext(sandbox);
 vm.runInContext(worker.slice(worker.indexOf('const mangaSessions'),worker.indexOf('chrome.runtime.onMessage.addListener'))+'\nglobalThis.handle=mangaMessage;',sandbox);
