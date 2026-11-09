@@ -1032,30 +1032,32 @@
   }
   function mangaDraw(ctx, bubbles, width, height) {
     let painted=0;
-    const paintedBoxes=[];
-    for (const b of bubbles) {
-      let box=mangaBox(b,width,height);
-      if (!box) continue;
+    const plans=bubbles.map(b=>({b, box:mangaBox(b,width,height),
+      raw:mangaBox({...b,confidence:1,translation:"geometry"},width,height)}));
+    for (const plan of plans) {
+      const b=plan.b;
+
+      let box=plan.box;
+      if (!box) { plan.reason="invalid-box-or-confidence"; continue; }
       let region=ctx.getImageData(box[0],box[1],box[2]-box[0],box[3]-box[1]);
       if (!mangaWhiteRegion(region.data,box[2]-box[0],box[3]-box[1])) {
-        const original=mangaWhiteStats(region.data,box[2]-box[0],box[3]-box[1]);
         let expanded=false;
-        // Tight OCR bounds can clip glyph strokes. Only rescue an already
-        // mostly-white interior when a small margin improves edge safety.
-        if (original.white>=.85) for (const pad of [2,4,6]) {
+        // The same safety thresholds apply to every candidate, including
+        // interior failures whose original perimeter is already perfectly white.
+        for (const pad of [2,4,6,8]) {
           const candidate=mangaBox({...b,bbox:[Math.max(0,box[0]-pad),Math.max(0,box[1]-pad),Math.min(width,box[2]+pad),Math.min(height,box[3]+pad)]},width,height);
           if (!candidate) continue;
           const cw=candidate[2]-candidate[0], ch=candidate[3]-candidate[1];
           const sample=ctx.getImageData(candidate[0],candidate[1],cw,ch);
           const stats=mangaWhiteStats(sample.data,cw,ch);
-          if (stats.white>=.88 && stats.interior>=.88 && stats.perimeter>=.9 && stats.perimeter>original.perimeter) {
+          if (stats.white>=.88 && stats.interior>=.88 && stats.perimeter>=.9) {
             box=candidate; region=sample; expanded=true; break;
           }
         }
-        if (!expanded) continue;
+        if (!expanded) { plan.reason="unsafe-background"; continue; }
       }
       const [x,y,right,bottom]=box, w=right-x,h=bottom-y;
-      if (paintedBoxes.some(([a,b,c,d])=>x<c && right>a && y<d && bottom>b)) continue;
+
       const chars=Array.from(b.translation.trim());
       let size= Math.min(28,Math.floor(h/2)), lines;
       for (;size>=10;size--) {
@@ -1066,19 +1068,60 @@
         }
         if (lines.length*size*1.25 <= h-8 && lines.every(line=>ctx.measureText(line).width<=w-8)) break;
       }
-      if (size<10) continue;
+      if (size<10) { plan.reason="text-does-not-fit"; continue; }
+      Object.assign(plan,{box,region,size,lines});
+    }
+    // Resolve every overlap before any pixel write, including expanded boxes
+    // and plausible geometry from low-confidence OCR entries.
+    const overlaps=(a,b)=>a && b && a[0]<b[2] && a[2]>b[0] && a[1]<b[3] && a[3]>b[1];
+    for (let i=0;i<plans.length;i++) for (let j=i+1;j<plans.length;j++) {
+      const a=plans[i], b=plans[j];
+      if (overlaps(a.box,b.box) || overlaps(a.raw,b.raw) || overlaps(a.box,b.raw) || overlaps(a.raw,b.box)) {
+        a.reason=b.reason="overlap";
+      }
+    }
+    for (const plan of plans) {
+      if (plan.reason) continue;
+      const {box,region,size,lines}=plan;
+      const [x,y,right,bottom]=box, w=right-x,h=bottom-y;
+      ctx.font=`${size}px sans-serif`;
       region.data.set(mangaEraseInk(region.data,w,h));
       ctx.putImageData(region,x,y);
       ctx.fillStyle="#111"; ctx.textAlign="center"; ctx.textBaseline="middle";
       lines.forEach((line,i)=>ctx.fillText(line,x+w/2,y+h/2+(i-(lines.length-1)/2)*size*1.25));
-      paintedBoxes.push(box);
       painted++;
     }
-    return painted;
+    return {painted, skipped:plans.filter(p=>p.reason).map(p=>({reason:p.reason,
+      text:typeof p.b?.text==="string" ? p.b.text.slice(0,300) : "", bbox:p.raw}))};
+  }
+
+  function mangaResultNote(result, total) {
+    if (!result.painted) return "未替换文字；定位不稳或背景不安全，保留完整原图。请重新框选。";
+    return `已替换 ${result.painted}/${total}；${result.skipped.length ? `${result.skipped.length} 处定位不稳或不适合覆盖，保留原图。` : ""}页面翻页后请重新框选。`;
+  }
+  function createMangaOverlayHider() {
+    const owned=new Map();
+    return elements=>{
+      const acquired=[];
+      for (const el of new Set(elements)) {
+        let entry=owned.get(el);
+        if (!entry) { entry={count:0,visibility:el.style.visibility}; owned.set(el,entry); }
+        entry.count++; el.style.visibility="hidden"; acquired.push(el);
+      }
+      let released=false;
+      return ()=>{
+        if (released) return;
+        released=true;
+        for (const el of acquired) {
+          const entry=owned.get(el);
+          if (--entry.count===0) { el.style.visibility=entry.visibility; owned.delete(el); }
+        }
+      };
+    };
   }
 
   return {
-    mangaBox, mangaWhiteRegion, mangaEraseInk, mangaHash, mangaDraw,
+    mangaBox, mangaWhiteRegion, mangaWhiteStats, mangaEraseInk, mangaHash, mangaDraw, mangaResultNote, createMangaOverlayHider,
     DISPLAY_MODES,
     TARGET_LANGUAGE_NAMES,
     X_TRANSLATABLE_SELECTOR,

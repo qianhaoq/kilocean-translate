@@ -3,6 +3,8 @@
   globalThis.kiloceanMangaInstalled = true;
   const U = globalThis.DeepSeekTranslatorUtils;
   let generation=0, host, token;
+  const hideOverlays=U.createMangaOverlayHider();
+  const captureReleases=new Set();
   const send = async message => {
     const result=await chrome.runtime.sendMessage(message);
     if (!result?.ok) throw new Error(result?.error || "无法处理选区");
@@ -10,6 +12,8 @@
   };
   function clear() {
     generation++;
+    for (const release of captureReleases) release();
+    captureReleases.clear();
     host?.remove(); host=null;
     if (token) chrome.runtime.sendMessage({type:"MANGA_CANCEL",token}).catch(()=>{});
     token=null;
@@ -54,12 +58,10 @@
       select.onpointerdown=null;select.onpointermove=null;select.onpointerup=null;
       const selectedLayout=layout();
       bar.querySelector('span').textContent='正在本地截取选区…';
-      const hidden=[];
-      // Include text selection/progress/caption overlays as well as this UI.
-      for(const el of document.querySelectorAll('[data-deepseek-translator-ui],#kilocean-progress-host,#kilocean-selection-host,#deepseek-translator-toast-host')) {
-        if (!['fixed','absolute'].includes(getComputedStyle(el).position)) continue;
-        hidden.push([el,el.style.visibility]);el.style.visibility='hidden';
-      }
+      // Shared ownership across overlapping generations prevents stale restores.
+      const releaseOverlays=hideOverlays(Array.from(document.querySelectorAll('[data-deepseek-translator-ui],#kilocean-progress-host,#kilocean-selection-host,#deepseek-translator-toast-host'))
+        .filter(el=>['fixed','absolute'].includes(getComputedStyle(el).position)));
+      captureReleases.add(releaseOverlays);
       try {
         await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
         const capture=await send({type:"MANGA_CAPTURE",token:binding});
@@ -73,7 +75,7 @@
         const ctx=canvas.getContext('2d',{willReadFrequently:true});
         ctx.drawImage(img,x,y,canvas.width,canvas.height,0,0,canvas.width,canvas.height);
         const original=canvas.toDataURL('image/png');
-        const hash=await U.mangaHash(original+selectedLayout);
+        const {hash,layout:layoutHash}=await send({type:"MANGA_HASH",token:binding,image:original,layout:selectedLayout});
         if(!alive())return;
         select.remove();box.remove();bar.replaceChildren();
         const note=document.createElement('span');note.textContent='仅将选区发送至 DeepSeek 翻译';bar.append(note);
@@ -85,13 +87,13 @@
           if(layout()!==selectedLayout){note.textContent='页面位置已变化，请取消后重新框选';return;}
           confirm.disabled=true;note.textContent='DeepSeek 正在识别与翻译…';
           try {
-            const result=await send({type:'MANGA_TRANSLATE',token:binding,confirmed:true,image:original,width:canvas.width,height:canvas.height,layout:selectedLayout,hash});
+            const result=await send({type:'MANGA_TRANSLATE',token:binding,confirmed:true,image:original,width:canvas.width,height:canvas.height,layout:layoutHash,hash});
             if(!alive() || result.hash!==hash)return;
             if(layout()!==selectedLayout)throw new Error('页面位置已变化，结果未显示，请重新框选');
-            const count=U.mangaDraw(ctx,result.bubbles,canvas.width,canvas.height);
-            note.textContent=`已替换 ${count} 处；不可靠或非白底区域保留原图。页面翻页后请重新框选。`;
+            const drawn=U.mangaDraw(ctx,result.bubbles,canvas.width,canvas.height);
+            note.textContent=U.mangaResultNote(drawn,result.bubbles.length);
             preview.remove();confirm.remove();
-            if(!count)return;
+            if(!drawn.painted)return;
             Object.assign(canvas.style,{left:rect.x+'px',top:rect.y+'px',width:rect.w+'px',height:rect.h+'px'});
             root.prepend(canvas);
             button('原图 / 译图',()=>{canvas.hidden=!canvas.hidden;});
@@ -100,17 +102,21 @@
           } catch(error) {if(alive()){note.textContent=error.message+'；请取消后重试';confirm.remove();}}
         });
       } catch(error) {if(alive())bar.querySelector('span').textContent=error.message+'；请取消后重试';}
-      finally {for(const [el,visibility] of hidden)el.style.visibility=visibility;}
+      finally {captureReleases.delete(releaseOverlays);releaseOverlays();}
     };
   }
   // Navigation clears bindings; reader-internal page flips cannot be reliably detected.
   addEventListener('pagehide',clear);
   addEventListener('popstate',clear);
+  addEventListener('hashchange',clear);
   addEventListener('resize',clear);
-  addEventListener('scroll',()=>{if(host)clear();},{passive:true});
+  addEventListener('scroll',()=>{if(host)clear();},{passive:true,capture:true});
   addEventListener('keydown',e=>{if(e.key==='Escape')clear();});
   chrome.runtime.onMessage.addListener((message,sender,reply)=>{
-    if(sender.id!==chrome.runtime.id || message?.type!=='MANGA_START')return;
+    if(sender.id!==chrome.runtime.id)return;
+    // tabs.onUpdated reports detectable pushState/replaceState URL changes.
+    if(message?.type==='MANGA_INVALIDATE') { if(message.token===token)clear(); return; }
+    if(message?.type!=='MANGA_START')return;
     start().catch(()=>clear());reply({ok:true});
   });
 })();

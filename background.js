@@ -269,7 +269,11 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if (changeInfo.status === "loading" || changeInfo.url) withdrawManga(tabId);
+  if (changeInfo.status === "loading" || changeInfo.url) {
+    const token=mangaSessions.get(tabId)?.token;
+    if (token) chrome.tabs.sendMessage(tabId,{type:"MANGA_INVALIDATE",token}).catch(()=>{});
+    withdrawManga(tabId);
+  }
   // Same-tab navigation destroys the content script; drop stale pending
   // selection + badge so the popup cannot confirm against a new document.
   if (changeInfo.url != null || changeInfo.status === "loading") {
@@ -547,6 +551,15 @@ async function mangaMessage(message, sender) {
   const session=mangaSessions.get(tabId);
   if (!session || session.token !== message.token) throw new Error("选区已失效");
   if (message.type === "MANGA_CANCEL") { withdrawManga(tabId); return {ok:true}; }
+  // Hash in the secure worker: HTTP content worlds may have no crypto.subtle.
+  if (message.type === "MANGA_HASH") {
+    if (typeof message.layout!=="string" || message.layout.length>1000000 ||
+        typeof message.image!=="string" || message.image.length>16000000) throw new Error("无效选区");
+    const layout=await DeepSeekTranslatorUtils.mangaHash(message.layout);
+    const hash=await DeepSeekTranslatorUtils.mangaHash(message.image+layout);
+    if (mangaSessions.get(tabId)!==session) throw new Error("选区已失效");
+    return {ok:true,layout,hash};
+  }
   if (message.type === "MANGA_CAPTURE") {
     const active=await chrome.tabs.query({active:true,windowId:sender.tab.windowId});
     if (active[0]?.id !== tabId) throw new Error("请保持当前标签页可见");
@@ -585,9 +598,15 @@ async function mangaMessage(message, sender) {
     if (typeof raw!=="string" || raw.length>100000) throw new Error("OCR 返回格式无效");
     const parsed=JSON.parse(raw.replace(/^```(?:json)?\s*|\s*```$/g,""));
     if (!Array.isArray(parsed.bubbles) || parsed.bubbles.length>100) throw new Error("OCR 返回格式无效");
-    const bubbles=parsed.bubbles.filter(b=>DeepSeekTranslatorUtils.mangaBox(b,message.width,message.height));
+    // Keep unreliable entries surfaceable; never silently drop OCR misses.
+    const bubbles=parsed.bubbles.map(b=>({
+      text:typeof b?.text==="string" ? b.text.slice(0,300) : "",
+      translation:typeof b?.translation==="string" ? b.translation.slice(0,301) : "",
+      bbox:Array.isArray(b?.bbox) && b.bbox.length===4 ? b.bbox : null,
+      confidence:Number.isFinite(b?.confidence) ? b.confidence : 0
+    }));
     if (!current()) throw new Error("选区已失效");
-    if (bubbles.length) {
+    if (bubbles.some(b=>DeepSeekTranslatorUtils.mangaBox(b,message.width,message.height))) {
       mangaCache.set(cacheKey,bubbles);
       if (mangaCache.size>8) mangaCache.delete(mangaCache.keys().next().value);
     }
