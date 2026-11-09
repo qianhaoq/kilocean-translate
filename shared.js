@@ -957,16 +957,74 @@
     const w = box[2]-box[0], h = box[3]-box[1];
     return w >= 12 && h >= 12 && w*h <= width*height*.25 ? box : null;
   }
-  function mangaWhiteRegion(data, width, height) {
-    let white = 0;
+  function mangaNearWhite(data, i) {
+    return data[i]>=240 && data[i+1]>=240 && data[i+2]>=240 && data[i+3]===255;
+  }
+  function mangaWhiteStats(data, width, height) {
+    let white=0, edgeWhite=0, edge=0, interiorWhite=0, interior=0;
     for (let y=0; y<height; y++) for (let x=0; x<width; x++) {
-      const i=(y*width+x)*4;
-      const near = data[i]>=240 && data[i+1]>=240 && data[i+2]>=240 && data[i+3]===255;
+      const near=mangaNearWhite(data,(y*width+x)*4);
       if (near) white++;
-      // Require a white perimeter: avoid cutting into bubble outlines/art.
-      if ((x<2 || y<2 || x>=width-2 || y>=height-2) && !near) return false;
+      // Tight OCR boxes may intersect a few glyph strokes at the edge.
+      if (x<2 || y<2 || x>=width-2 || y>=height-2) {
+        edge++;
+        if (near) edgeWhite++;
+      } else {
+        interior++;
+        if (near) interiorWhite++;
+      }
     }
-    return white/(width*height) >= .88;
+    return {white:white/(width*height), interior:interiorWhite/interior, perimeter:edgeWhite/edge};
+  }
+  function mangaWhiteRegion(data, width, height) {
+    const stats=mangaWhiteStats(data,width,height);
+    return stats.white>=.88 && stats.interior>=.88 && stats.perimeter>=.9;
+  }
+  function mangaEraseInk(data, width, height) {
+    const output=new Uint8ClampedArray(data);
+    const visited=new Uint8Array(width*height);
+    const ink=p=>{
+      const i=p*4, r=data[i], g=data[i+1], b=data[i+2];
+      // Preserve colored artwork, transparency and the near-white background.
+      return data[i+3]===255 && Math.max(r,g,b)<240 && Math.max(r,g,b)-Math.min(r,g,b)<=30;
+    };
+    for (let p=0; p<width*height; p++) {
+      if (visited[p] || !ink(p)) continue;
+      const component=[p]; visited[p]=1;
+      let left=width, top=height, right=0, bottom=0;
+      for (let n=0; n<component.length; n++) {
+        const q=component[n], x=q%width, y=Math.floor(q/width);
+        left=Math.min(left,x); right=Math.max(right,x);
+        top=Math.min(top,y); bottom=Math.max(bottom,y);
+        for (const [dx,dy] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+          const nx=x+dx, ny=y+dy, next=ny*width+nx;
+          if (nx<0 || ny<0 || nx>=width || ny>=height || visited[next] || !ink(next)) continue;
+          visited[next]=1; component.push(next);
+        }
+      }
+      // Long connected strokes are more likely bubble outlines/art than text.
+      if (right-left+1>Math.max(32,width*.45) || bottom-top+1>Math.max(32,height*.85)) continue;
+      const touches=(left===0?1:0)+(top===0?1:0)+(right===width-1?1:0)+(bottom===height-1?1:0);
+      // A stroke crossing two crop edges may be a clipped bubble corner.
+      if (touches>=2) continue;
+      const cw=right-left+1, ch=bottom-top+1;
+      if (cw>=8 && ch>=8 && component.length/(cw*ch)>.7) continue;
+      let near=0, samples=0;
+      // Judge the ORIGINAL local background around each connected ink mark.
+      // Whiten only its ink pixels, never the rectangle or neighboring colors.
+      for (let y=Math.max(0,top-3); y<=Math.min(height-1,bottom+3); y++) {
+        for (let x=Math.max(0,left-3); x<=Math.min(width-1,right+3); x++) {
+          if (x>=left && x<=right && y>=top && y<=bottom) continue;
+          samples++;
+          if (mangaNearWhite(data,(y*width+x)*4)) near++;
+        }
+      }
+      if (samples<12 || near/samples<.8) continue;
+      for (const q of component) {
+        const i=q*4; output[i]=output[i+1]=output[i+2]=255;
+      }
+    }
+    return output;
   }
   async function mangaHash(value) {
     const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
@@ -976,11 +1034,28 @@
     let painted=0;
     const paintedBoxes=[];
     for (const b of bubbles) {
-      const box=mangaBox(b,width,height);
+      let box=mangaBox(b,width,height);
       if (!box) continue;
+      let region=ctx.getImageData(box[0],box[1],box[2]-box[0],box[3]-box[1]);
+      if (!mangaWhiteRegion(region.data,box[2]-box[0],box[3]-box[1])) {
+        const original=mangaWhiteStats(region.data,box[2]-box[0],box[3]-box[1]);
+        let expanded=false;
+        // Tight OCR bounds can clip glyph strokes. Only rescue an already
+        // mostly-white interior when a small margin improves edge safety.
+        if (original.white>=.85) for (const pad of [2,4,6]) {
+          const candidate=mangaBox({...b,bbox:[Math.max(0,box[0]-pad),Math.max(0,box[1]-pad),Math.min(width,box[2]+pad),Math.min(height,box[3]+pad)]},width,height);
+          if (!candidate) continue;
+          const cw=candidate[2]-candidate[0], ch=candidate[3]-candidate[1];
+          const sample=ctx.getImageData(candidate[0],candidate[1],cw,ch);
+          const stats=mangaWhiteStats(sample.data,cw,ch);
+          if (stats.white>=.88 && stats.interior>=.88 && stats.perimeter>=.9 && stats.perimeter>original.perimeter) {
+            box=candidate; region=sample; expanded=true; break;
+          }
+        }
+        if (!expanded) continue;
+      }
       const [x,y,right,bottom]=box, w=right-x,h=bottom-y;
       if (paintedBoxes.some(([a,b,c,d])=>x<c && right>a && y<d && bottom>b)) continue;
-      if (!mangaWhiteRegion(ctx.getImageData(x,y,w,h).data,w,h)) continue;
       const chars=Array.from(b.translation.trim());
       let size= Math.min(28,Math.floor(h/2)), lines;
       for (;size>=10;size--) {
@@ -992,7 +1067,8 @@
         if (lines.length*size*1.25 <= h-8 && lines.every(line=>ctx.measureText(line).width<=w-8)) break;
       }
       if (size<10) continue;
-      ctx.fillStyle="#fff"; ctx.fillRect(x,y,w,h);
+      region.data.set(mangaEraseInk(region.data,w,h));
+      ctx.putImageData(region,x,y);
       ctx.fillStyle="#111"; ctx.textAlign="center"; ctx.textBaseline="middle";
       lines.forEach((line,i)=>ctx.fillText(line,x+w/2,y+h/2+(i-(lines.length-1)/2)*size*1.25));
       paintedBoxes.push(box);
@@ -1002,7 +1078,7 @@
   }
 
   return {
-    mangaBox, mangaWhiteRegion, mangaHash, mangaDraw,
+    mangaBox, mangaWhiteRegion, mangaEraseInk, mangaHash, mangaDraw,
     DISPLAY_MODES,
     TARGET_LANGUAGE_NAMES,
     X_TRANSLATABLE_SELECTOR,

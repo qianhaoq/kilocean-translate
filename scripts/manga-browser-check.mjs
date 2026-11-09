@@ -72,7 +72,7 @@ try {
     const c=document.createElement('canvas');c.width=img.width;c.height=img.height;const ctx=c.getContext('2d');ctx.drawImage(img,0,0);
     const before=c.toDataURL();
     const painted=DeepSeekTranslatorUtils.mangaDraw(ctx,[
-      {text:'こんにちは',translation:'你好',bbox:[82,108,252,158],confidence:.99},
+      {text:'こんにちは',translation:'你好',bbox:[82,104,254,146],confidence:.99},
       {text:'元気？',translation:'你好吗？',bbox:[242,347,397,400],confidence:.99}
     ],c.width,c.height);
     return {before,after:c.toDataURL(),painted};
