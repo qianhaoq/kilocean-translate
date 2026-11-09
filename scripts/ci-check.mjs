@@ -25,6 +25,7 @@ const ALLOWED_HOSTS = new Set([
 const JS_FILES = [
   "background.js",
   "content.js",
+  "manga-content.js",
   "popup.js",
   "shared.js",
   ...(fs.existsSync(path.join(ROOT, "welcome.js")) ? ["welcome.js"] : [])
@@ -2190,6 +2191,7 @@ function createPopupVm(
     "open-settings",
     "back-main",
     "more-settings",
+    "manga-start",
     "provider-status",
     "provider-status-label",
     "provider-status-meta",
@@ -5948,6 +5950,22 @@ async function checkPopupActionInitGate() {
   };
   const messagesOfType = (messages, type) => messages.filter((message) => message?.type === type);
 
+  // Manga trigger must await initialization and every queued edit before injection.
+  {
+    const {popup, writes, release, tabMessages}=createGatedPopup(seededStorage({targetLanguage:"ja"}));
+    const injected=[];
+    popup.sandbox.chrome.scripting.executeScript=async args=>injected.push(args);
+    await tick();
+    const click=fireAction(popup.dom.get("manga-start"),"click");
+    await tick();
+    assertEqual(injected.length,0,"manga gate: no injection before initial read");
+    assertEqual(writes.length,0,"manga gate: no write before initial read");
+    await release(); await click;
+    assertEqual(injected.length,1,"manga gate: inject after stored settings loaded");
+    assertEqual(popup.storage.targetLanguage,"ja","manga gate: preserve stored target language");
+    assertEqual(messagesOfType(tabMessages,"MANGA_START").length,1,"manga gate: start once");
+  }
+
   // (1) Export settings — the reported P1: the backup must contain the
   // STORED provider/model/language/mode and, with the opt-in checked, BOTH
   // stored keys — never the pre-init defaults.
@@ -6920,6 +6938,25 @@ async function checkPopupViews150() {
       "option concurrency: the follow-up write matches the latest provider choice"
     );
     assertEqual(gate.maxInFlight, 1, "option concurrency: the queue never runs two storage writes at once");
+  }
+
+  // Manga action waits for a parked write and the subsequent edit's commit.
+  {
+    const popup=createPopupVm(seededMain());
+    await popup.hooks.initializePromise;
+    const gate=gateStorage(popup), injected=[];
+    popup.sandbox.chrome.scripting.executeScript=async args=>injected.push(args);
+    fire(popup.providerOptionButtons[1],"click");
+    const action=Promise.all(popup.dom.get("manga-start").listeners.click.map(fn=>fn()));
+    await tick();
+    assertEqual(injected.length,0,"manga concurrency: held save prevents injection");
+    fire(popup.providerOptionButtons[0],"click");
+    gate.writes[0].release();
+    await waitFor(()=>gate.writes.length===2,"manga follow-up write");
+    assertEqual(injected.length,0,"manga concurrency: follow-up save prevents injection");
+    gate.writes[1].release();await action;
+    assertEqual(injected.length,1,"manga concurrency: inject after stable save");
+    assertEqual(gate.maxInFlight,1,"manga concurrency: serialized storage");
   }
 
   // (4c) Codex PR #19 P2-4: the setup card's PRICING link follows the provider
@@ -10354,6 +10391,8 @@ async function main() {
     await runContent150Checks({ ROOT, fail });
     contentChecksLabel = ", content checks 1.5.0 (vm)";
   }
+  const { checkMangaMvp } = await import("./checks-manga-mvp.mjs");
+  await checkMangaMvp(ROOT);
   await checkPackaging();
   await checkPackPathSafety();
   await checkPackGetUrlReferences();
