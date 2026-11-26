@@ -376,7 +376,7 @@
       model: Utils.migrateModelName(options.model) || "deepseek-flash"
     };
     Object.assign(state, activeRunSettings, {
-      active: true, phase: "translated",
+      active: true, phase: "translated", translated: 0, total: 0, failed: 0,
       displayMode: Utils.normalizeDisplayMode(options.youtubeDisplayMode || "translation-only")
     });
     const overlay = document.createElement("div");
@@ -387,7 +387,7 @@
     const session = {
       player, overlay, runId: generation, settings: { ...activeRunSettings },
       text: "", translation: "", translationSource: "", ready: "", busy: false, timer: null,
-      firstChange: 0, observer: null, nativeStyles: new Map(), lastValidTranslation: ""
+      firstChange: 0, observer: null, nativeStyles: new Map(), lastValidTranslation: "", completedUnits: []
     };
     captionSession = session;
     session.observer = new MutationObserver((records) => {
@@ -400,7 +400,7 @@
     session.observer.observe(player, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["class", "style", "aria-pressed"] });
     applyDocumentDisplayMode(state.displayMode);
     readYouTubeCaptions(session);
-    showToast("字幕翻译已开启；请保持原生 CC 开启", "info");
+    if (!session.targetLanguageNotice) showToast("字幕翻译已开启；请保持原生 CC 开启", "info");
     notifyPopupStatus();
   }
 
@@ -451,14 +451,32 @@
       (stem && (current === stem || current.startsWith(stem)));
   }
 
+  // Keep the longest successfully displayed snapshot per unit for the whole
+  // session: both karaoke growth and cached seeks share that single count.
+  function countYouTubeCaption(session, text) {
+    session.completedUnits ||= [];
+    const index = session.completedUnits.findIndex((unit) =>
+      extendsCaptionUnit(unit, text) || extendsCaptionUnit(text, unit));
+    if (index >= 0) {
+      if (text.length > session.completedUnits[index].length) session.completedUnits[index] = text;
+      return;
+    }
+    session.completedUnits.push(text);
+    state.translated += 1;
+    notifyPopupStatus();
+  }
+
   function readYouTubeCaptions(session) {
     if (session !== captionSession || checkSpaNavigation()) return;
     renderYouTubeCaptions();
     const cc = session.player.querySelector(".ytp-subtitles-button");
-    const text = cc?.getAttribute("aria-pressed") === "false" ? "" :
+    const joined = cc?.getAttribute("aria-pressed") === "false" ? "" :
       [...session.player.querySelectorAll(".ytp-caption-segment")]
         .filter((node) => !hasHiddenAncestor(node) && node.getClientRects().length)
-        .map((node) => node.textContent).join(" ").replace(/\s+/gu, " ").trim();
+        .map((node) => node.textContent)
+        .filter((text) => !Utils.isYouTubeCaptionChrome(text))
+        .join(" ").replace(/\s+/gu, " ").trim();
+    const text = Utils.isYouTubeCaptionChrome(joined) ? "" : joined;
     if (text === session.text) return;
     const previousText = session.text;
     clearTimeout(session.timer);
@@ -471,6 +489,7 @@
       session.translation = cached;
       session.lastValidTranslation = cached;
       session.translationSource = text;
+      countYouTubeCaption(session, text);
       session.ready = "";
       session.firstChange = 0;
       renderYouTubeCaptions();
@@ -495,6 +514,7 @@
     if (Utils.isCaptionInTargetLanguage(text, session.settings.targetLanguage || "zh-CN")) {
       session.translation = text;
       session.translationSource = text;
+      countYouTubeCaption(session, text);
       session.ready = "";
       renderYouTubeCaptions();
       if (!session.targetLanguageNotice) showToast("当前字幕已是目标语言，无需翻译", "info");
@@ -549,6 +569,7 @@
         session.translation = translated;
         session.lastValidTranslation = translated;
         session.translationSource = text;
+        countYouTubeCaption(session, text);
         renderYouTubeCaptions();
       }
     } catch (error) {

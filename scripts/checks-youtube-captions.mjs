@@ -31,17 +31,21 @@ export async function checkYouTubeCaptions(ROOT) {
     assert.equal(modeState.displayMode, "original");
   }
 
-  const names = ["extendsCaptionUnit", "readYouTubeCaptions", "translateYouTubeCaption", "renderYouTubeCaptions", "stopYouTubeCaptions"];
+  const names = ["countYouTubeCaption", "extendsCaptionUnit", "readYouTubeCaptions", "translateYouTubeCaption", "renderYouTubeCaptions", "stopYouTubeCaptions"];
   const functions = names.map((name) => source.match(new RegExp(`(?:async )?function ${name}\\([\\s\\S]*?\\n  \\}`))[0]).join("\n");
   const startSource = source.match(/function startYouTubeCaptions\([\s\S]*?\n  \}/)[0];
   const hints = [];
   const noCc = vm.createContext({
     restoreOriginal: () => {}, location: { href: "https://www.youtube.com/watch?v=test" },
     document: { querySelector: () => ({ querySelector: () => null }) },
+    captionSession: null,
+    requestSegmentTranslations: () => assert.fail("no CC must not request translation"),
     showToast: (message) => hints.push(message)
   });
   vm.runInContext(startSource, noCc);
   noCc.startYouTubeCaptions({});
+  assert.equal(noCc.captionSession, null, "no CC must not start a session");
+  assert.equal(hints.length, 1);
   assert.match(hints[0], /CC/, "no CC asks the user to enable captions without sending a request");
   const requests = [];
   const timers = new Map();
@@ -62,13 +66,14 @@ export async function checkYouTubeCaptions(ROOT) {
   };
   const clock = { value: 1000 };
   const context = vm.createContext({
-    Utils: utils, captionSession: session, state: { displayMode: "bilingual" },
+    Utils: utils, captionSession: session, state: { displayMode: "bilingual", translated: 0 },
     Date: { now: () => clock.value }, checkSpaNavigation: () => false, hasHiddenAncestor: () => false,
     setTimeout: (fn) => { timers.set(++nextTimer, fn); return nextTimer; },
     clearTimeout: (id) => timers.delete(id),
     getCachedTranslation: (text) => cache.get(text) ?? null,
     setCachedTranslation: (text, value) => cache.set(text, value),
     requestSegmentTranslations: (texts) => new Promise((resolve) => requests.push({ texts, resolve })),
+    notifyPopupStatus() {},
     showToast: (message) => hints.push(message)
   });
   vm.runInContext(functions, context);
@@ -91,6 +96,7 @@ export async function checkYouTubeCaptions(ROOT) {
   requests[1].resolve(["下一句"]);
   await settle();
   // Overlay shows the translation only in every non-original mode.
+  assert.equal(context.state.translated, 1, "only the successfully displayed cue counts");
   assert.equal(overlay.textContent, "下一句");
   context.state.displayMode = "translation-only";
   context.renderYouTubeCaptions();
@@ -109,9 +115,12 @@ export async function checkYouTubeCaptions(ROOT) {
   visibleText = "Failed cue."; read(); fire();
   requests[2].resolve([]); await settle();
   assert.equal(overlay.textContent, "你好世界", "failure restores last valid translation");
+  assert.equal(context.state.translated, 2, "first displayed cache hit counts, failure does not");
   const beforeChinese = requests.length;
   visibleText = "这已经是中文字幕。"; read(); fire(); await settle();
   assert.equal(requests.length, beforeChinese, "Chinese captions never request translation");
+  assert.match(hints.at(-1), /无需翻译/);
+  assert.equal(context.state.translated, 3);
   assert.equal(utils.isCaptionInTargetLanguage("日本語の字幕です", "zh-CN"), false);
   context.state.displayMode = "translation-only"; context.renderYouTubeCaptions();
   visibleText = "Pending navigation."; read(); fire();
@@ -138,7 +147,7 @@ export async function checkYouTubeCaptions(ROOT) {
     text: "", translation: "", translationSource: "", ready: "", firstChange: 0, busy: false
   };
   const rollingContext = vm.createContext({
-    Utils: utils, captionSession: rollingSession, state: { displayMode: "bilingual" },
+    Utils: utils, captionSession: rollingSession, state: { displayMode: "bilingual", translated: 0 },
     Date: { now: () => rollingClock.value }, checkSpaNavigation: () => false, hasHiddenAncestor: () => false,
     setTimeout: (fn, delay) => schedule(fn, Number(delay) || 0),
     clearTimeout: (id) => scheduled.delete(id),
@@ -148,6 +157,7 @@ export async function checkYouTubeCaptions(ROOT) {
       sent.push({ texts: [...texts], at: rollingClock.value });
       return new Promise((resolve) => schedule(() => resolve([`译（${texts[0]}）`]), 400));
     },
+    notifyPopupStatus() {},
     showToast: (message) => hints.push(message)
   });
   vm.runInContext(functions, rollingContext);
@@ -215,6 +225,8 @@ export async function checkYouTubeCaptions(ROOT) {
     "final translation is displayed"
   );
 
+  assert.equal(rollingContext.state.translated, 1, "karaoke snapshots count as one unit");
+
   // Scenario 2: seeking back to a cached cue while a request is busy.
   liveText = "A completely different sentence.";
   readRolling();
@@ -237,4 +249,80 @@ export async function checkYouTubeCaptions(ROOT) {
   assert.equal(rollingCache.has("A completely different sentence."), true, "unrelated cue still warms the LRU");
   advance(1000); await settleRolling();
   assert.equal(sent.length, 4, "cached seek never re-requests afterwards");
+  assert.equal(rollingContext.state.translated, 1, "cached seek does not count the same unit again");
+
+  const chromeLabels = ["中文（中国）", "中文（中国） / 点击 查看设置", "中文（中国） 点击查看设置", "点击查看设置", "点击 查看设置", "click to view settings", "English / Click to view settings"];
+  for (const text of chromeLabels) assert.equal(utils.isYouTubeCaptionChrome(text), true, text);
+  for (const text of ["Click to view settings before you continue the lesson.", "We changed the settings.", "这是一句真正的中文字幕。", "Hello world."]) {
+    assert.equal(utils.isYouTubeCaptionChrome(text), false, text);
+  }
+
+  // Exercise the real startup with dirty counters and controlled debounce,
+  // rather than substituting a read stub (which would miss toast ordering).
+  for (const initial of ["这已经是中文字幕。", "Hello world.", "", ...chromeLabels]) {
+    let nodes = [initial];
+    const notices = [];
+    const startupTimers = new Map();
+    const startupRequests = [];
+    let notifications = 0;
+    const startupOverlay = { hidden: true, setAttribute() {}, style: {}, remove() {} };
+    const player = {
+      querySelector: () => ({ getAttribute: () => "true" }), appendChild() {},
+      querySelectorAll: (selector) => selector.includes("window-container") ? [] : nodes.map((textContent) => ({ textContent, getClientRects: () => [1] }))
+    };
+    const startup = vm.createContext({
+      Utils: utils, state: { translated: 99, total: 88, failed: 77 }, generation: 1,
+      captionSession: null, restoreOriginal() {}, location: { href: "https://www.youtube.com/watch?v=test" },
+      document: { querySelector: () => player, createElement: () => startupOverlay },
+      MutationObserver: class { observe() {} disconnect() {} },
+      applyDocumentDisplayMode() {}, checkSpaNavigation: () => false, hasHiddenAncestor: () => false,
+      setTimeout: (fn) => { startupTimers.set(++nextTimer, fn); return nextTimer; }, clearTimeout: (id) => startupTimers.delete(id),
+      getCachedTranslation: () => null, setCachedTranslation() {},
+      requestSegmentTranslations: async (texts) => { startupRequests.push([...texts]); return ["你好世界"]; },
+      notifyPopupStatus: () => notifications++, showToast: (message) => notices.push(message)
+    });
+    vm.runInContext(functions + "\n" + startSource, startup);
+    startup.startYouTubeCaptions({});
+    assert.equal(startup.state.active, true);
+    assert.ok(startup.captionSession, "even a target-language cue starts following");
+    assert.equal(startup.state.total, 0);
+    assert.equal(startup.state.failed, 0);
+    assert.equal(startupRequests.length, 0, "startup never bypasses the cue debounce");
+    assert.equal(notices.length, 1);
+    const chinese = initial === "这已经是中文字幕。";
+    assert.match(notices[0], chinese ? /无需翻译/ : /字幕翻译已开启/);
+    assert.equal(startup.state.translated, chinese ? 1 : 0);
+    if (chinese) {
+      assert.equal(startupTimers.size, 0);
+      nodes = ["Hello world."];
+      startup.readYouTubeCaptions(startup.captionSession);
+    }
+    for (const fn of startupTimers.values()) fn();
+    startupTimers.clear();
+    await settle();
+    assert.equal(startupRequests.length, chinese || initial === "Hello world." ? 1 : 0);
+    if (chromeLabels.includes(initial)) {
+      assert.equal(startupOverlay.textContent, "");
+      assert.equal(startup.state.translated, 0);
+      nodes = ["中文（中国）", "A real subtitle.", "点击 查看设置"];
+      startup.readYouTubeCaptions(startup.captionSession);
+      for (const fn of startupTimers.values()) fn();
+      startupTimers.clear();
+      await settle();
+      assert.deepEqual(startupRequests, [["A real subtitle."]], "chrome nodes are dropped before joining real captions");
+      assert.equal(startup.state.translated, 1);
+      nodes = ["click to view", "settings"];
+      startup.readYouTubeCaptions(startup.captionSession);
+      assert.equal(startupOverlay.textContent, "", "joined chrome is also rejected");
+    }
+    if (!initial) {
+      nodes = ["这已经是中文字幕。"];
+      startup.readYouTubeCaptions(startup.captionSession);
+      assert.equal(notices.length, 2, "text arriving after startup can add the target-language notice");
+      assert.match(notices[1], /无需翻译/);
+      assert.equal(startupRequests.length, 0);
+      assert.equal(startup.state.translated, 1);
+    }
+    assert.equal(notifications, 1 + startup.state.translated, "each newly counted unit publishes popup status");
+  }
 }

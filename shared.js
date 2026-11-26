@@ -378,6 +378,16 @@
       host.endsWith(".x.com") || host.endsWith(".twitter.com");
   }
 
+  // Match only whole UI labels/prompts, not sentences mentioning settings.
+  function isYouTubeCaptionChrome(text) {
+    const value = String(text || "").replace(/\s+/gu, " ").trim().replace(/^[\s/]+|[\s/]+$/gu, "");
+    if (!value) return false;
+    const prompt = /点击\s*查看\s*设置/u;
+    if (prompt.test(value)) return true;
+    if (/^(?:(?:[\p{L} -]+(?:\s*\([^()]*\))?)\s*\/\s*)?click\s+to\s+view\s+settings[.!]?$/iu.test(value)) return true;
+    return /^(?:中文(?:\s*[（(]\s*中国\s*[）)])?|Chinese(?:\s*\(China\))?)$/iu.test(value);
+  }
+
   function isCaptionInTargetLanguage(text, targetLanguage) {
     if (!/^zh(?:-|$)/i.test(targetLanguage)) return false;
     const letters = text.match(/\p{L}/gu) || [];
@@ -985,6 +995,7 @@
     isXHost,
     isYouTubeWatchUrl,
     isCaptionInTargetLanguage,
+    isYouTubeCaptionChrome,
     preserveWhitespace,
     orderSegmentsByViewport,
     chunkSegments,
