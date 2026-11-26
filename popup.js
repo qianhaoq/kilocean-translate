@@ -2261,7 +2261,7 @@ async function importSettingsFile(file) {
 // write already in flight, and an edit the user makes to an imported field
 // while the import's write is pending stays dirty and wins the follow-up.
 async function applyImportedSettings(imported) {
-  const updates = { youtubeDisplayMode: imported.youtubeDisplayMode || "translation-only" };
+  const updates = {};
   for (const field of ["provider", "targetLanguage", "model", "displayMode", "youtubeDisplayMode"]) {
     if (imported[field]) {
       updates[field] = imported[field];
