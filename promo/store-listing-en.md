@@ -1,33 +1,17 @@
-# Chrome Web Store copy (English)
+# Store listing draft · Kilocean Translate
 
 ## Short description
-Translate any page with your own DeepSeek API key. Progressive full-page translation that also catches newly loaded content. Minimal permissions.
+Chinese subtitles for YouTube and progressive webpage translation. Bring your DeepSeek / Kimi key. No login or membership wall.
 
 ## Detailed description
-DeepSeek Live Page Translator is a lightweight Chrome extension for people who want DeepSeek-quality webpage translation without handing their API key to a third-party service.
+Kilocean Translate follows YouTube's native captions. Enable CC first, then click “翻译字幕” (Translate captions). Chinese translation is shown by default; bilingual mode keeps native captions visible for comparison. Original mode shows native captions alone. CC stays enabled as the text source, with visual hiding restored when translation stops. Click again after switching videos. No audio transcription.
 
-Open a foreign-language page, click the extension, and translate the current tab into your target language. As you scroll or interact, newly loaded text is translated automatically.
+Translations appear inside the video player and follow player fullscreen. Failed requests show a notice and retain the last valid translation. Captions recognized as Chinese are not sent for translation.
 
-### Highlights
-• Progressive full-page translation (results appear batch by batch)  
-• Auto-follows dynamically loaded content  
-• Target languages: Simplified Chinese, Traditional Chinese, English, Japanese, Korean  
-• Models: DeepSeek V4 Flash (fast) and V4 Pro (higher quality)  
-• One-click restore original text  
-• Skips code blocks, inputs, URL-like text, and pure numbers  
-• Export translated page as HTML, or print / save as PDF  
-• API key stored only in local Chrome storage  
-• Uses activeTab — only accesses the tab after you click the icon, press a shortcut (Alt+A page / Alt+T selection) or use the right-click menu  
-• contextMenus (1.5.0) — adds “翻译选中文字 / 翻译此页” to the right-click menu; no install or update permission warning, and it does not read page content by itself
+Progressive page and selection translation also work on ordinary webpages, including arXiv HTML papers. There is no dedicated paper mode or in-place PDF translation. Webpages default to bilingual and remember their display mode separately from YouTube. Save translated HTML or print to PDF.
 
-### How to use
-1. Install the extension and open a normal webpage  
-2. Open the popup and paste your DeepSeek API key (https://platform.deepseek.com/api_keys)  
-3. Pick target language + model  
-4. Click “翻译此页” (Translate this page), or press Alt+A; select text and press Alt+T to translate a selection
+Bring your own DeepSeek / Kimi API key. No login or membership wall; provider API charges apply. Keys stay in local storage, and text goes directly to the selected provider API. The developer receives neither.
 
-### Privacy
-Page text is sent directly to DeepSeek’s official API. The developer never receives your key or page content.  
-This is an independent third-party tool and is not affiliated with, sponsored by, or endorsed by DeepSeek. API usage may incur charges per DeepSeek’s pricing.
+Use the popup, Alt+A, or the page context menu to start the appropriate translation for the current page. Select text and press Alt+T for selection translation. Target languages include Simplified Chinese, Traditional Chinese, English, Japanese and Korean.
 
-If it helps you, a store rating means a lot for an indie extension.
+Minimal permissions: activeTab, scripting, storage, contextMenus and translation API hosts. Scripts are injected after user gestures, without permanent access to all websites.

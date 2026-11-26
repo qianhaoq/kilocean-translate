@@ -93,6 +93,7 @@ async function loadSettings() {
     targetLanguage: ALLOWED_TARGET_LANGUAGES.has(stored.targetLanguage)
       ? stored.targetLanguage
       : DEFAULT_SETTINGS.targetLanguage,
+    youtubeDisplayMode: stored.youtubeDisplayMode || "translation-only",
     displayMode: stored.displayMode || DEFAULT_SETTINGS.displayMode
   };
 }
@@ -462,7 +463,8 @@ async function startPageTranslationFromCommand(tabId) {
         provider: settings.provider,
         targetLanguage: settings.targetLanguage,
         model: settings.model,
-        displayMode: settings.displayMode
+        displayMode: settings.displayMode,
+        youtubeDisplayMode: settings.youtubeDisplayMode
       }
     });
   } catch {

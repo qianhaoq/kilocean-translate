@@ -135,11 +135,12 @@
 
   chrome.storage.local.get({
     displayMode: Utils.DISPLAY_MODES.bilingual,
+    youtubeDisplayMode: "translation-only",
     provider: state.provider,
     targetLanguage: state.targetLanguage,
     model: state.model
   }, (stored) => {
-    state.displayMode = Utils.normalizeDisplayMode(stored.displayMode);
+    state.displayMode = Utils.normalizeDisplayMode(Utils.isYouTubeWatchUrl(location.href) ? stored.youtubeDisplayMode : stored.displayMode);
     if (stored.provider === "kimi" || stored.provider === "deepseek") {
       state.provider = stored.provider;
     }
@@ -159,8 +160,9 @@
     if (area !== "local") {
       return;
     }
-    if (changes.displayMode) {
-      state.displayMode = Utils.normalizeDisplayMode(changes.displayMode.newValue);
+    const modeChange = Utils.isYouTubeWatchUrl(location.href) ? changes.youtubeDisplayMode : changes.displayMode;
+    if (modeChange) {
+      state.displayMode = Utils.normalizeDisplayMode(modeChange.newValue || (Utils.isYouTubeWatchUrl(location.href) ? "translation-only" : "bilingual"));
       applyDocumentDisplayMode(state.displayMode);
       refreshAllBlockDisplays();
       updateProgressPill();
@@ -365,7 +367,7 @@
     const player = document.querySelector(".html5-video-player");
     const cc = player?.querySelector('.ytp-subtitles-button');
     if (!player || (cc?.getAttribute("aria-pressed") !== "true" && !player.querySelector(".ytp-caption-segment"))) {
-      showToast("请先开启 YouTube 字幕（CC），再点击翻译此页", "info", 5000);
+      showToast("请先开启 YouTube 字幕（CC），再点击「翻译字幕」", "info", 5000);
       return;
     }
     activeRunSettings = {
@@ -375,7 +377,7 @@
     };
     Object.assign(state, activeRunSettings, {
       active: true, phase: "translated",
-      displayMode: Utils.normalizeDisplayMode(options.displayMode || state.displayMode)
+      displayMode: Utils.normalizeDisplayMode(options.youtubeDisplayMode || "translation-only")
     });
     const overlay = document.createElement("div");
     overlay.setAttribute("data-deepseek-translator-ui", "true");
@@ -385,7 +387,7 @@
     const session = {
       player, overlay, runId: generation, settings: { ...activeRunSettings },
       text: "", translation: "", translationSource: "", ready: "", busy: false, timer: null,
-      firstChange: 0, observer: null
+      firstChange: 0, observer: null, nativeStyles: new Map(), lastValidTranslation: ""
     };
     captionSession = session;
     session.observer = new MutationObserver((records) => {
@@ -406,6 +408,10 @@
     if (!captionSession) return;
     captionSession.observer.disconnect();
     clearTimeout(captionSession.timer);
+    for (const [node, opacity] of captionSession.nativeStyles || []) {
+      if (opacity.value) node.style.setProperty("opacity", opacity.value, opacity.priority);
+      else node.style.removeProperty("opacity");
+    }
     captionSession.overlay.remove();
     captionSession = null;
   }
@@ -413,10 +419,23 @@
   function renderYouTubeCaptions() {
     const session = captionSession;
     if (!session) return;
+    session.nativeStyles ||= new Map();
+    for (const node of session.player.querySelectorAll(".ytp-caption-window-container")) {
+      if (!session.nativeStyles.has(node)) {
+        session.nativeStyles.set(node, { value: node.style.getPropertyValue("opacity"), priority: node.style.getPropertyPriority("opacity") });
+      }
+      const original = session.nativeStyles.get(node);
+      const value = state.displayMode === Utils.DISPLAY_MODES.translationOnly ? "0" : original.value;
+      const priority = state.displayMode === Utils.DISPLAY_MODES.translationOnly ? "important" : original.priority;
+      if (node.style.getPropertyValue("opacity") !== value || node.style.getPropertyPriority("opacity") !== priority) {
+        if (value) node.style.setProperty("opacity", value, priority);
+        else node.style.removeProperty("opacity");
+      }
+    }
     // The overlay shows the translation only; the original text stays on the
     // native `.ytp-caption-segment` CC, which this code never alters.
     session.overlay.textContent = session.translation;
-    // Native captions provide original mode; never alter their nodes or styles.
+    // Keep CC enabled and its text intact so the observer can keep reading.
     session.overlay.hidden = state.displayMode === Utils.DISPLAY_MODES.original || !session.overlay.textContent;
   }
 
@@ -434,6 +453,7 @@
 
   function readYouTubeCaptions(session) {
     if (session !== captionSession || checkSpaNavigation()) return;
+    renderYouTubeCaptions();
     const cc = session.player.querySelector(".ytp-subtitles-button");
     const text = cc?.getAttribute("aria-pressed") === "false" ? "" :
       [...session.player.querySelectorAll(".ytp-caption-segment")]
@@ -449,6 +469,7 @@
     if (cached) {
       session.text = text;
       session.translation = cached;
+      session.lastValidTranslation = cached;
       session.translationSource = text;
       session.ready = "";
       session.firstChange = 0;
@@ -470,6 +491,16 @@
       session.translationSource = "";
       session.ready = "";
       renderYouTubeCaptions();
+    }
+    if (Utils.isCaptionInTargetLanguage(text, session.settings.targetLanguage || "zh-CN")) {
+      session.translation = text;
+      session.translationSource = text;
+      session.ready = "";
+      renderYouTubeCaptions();
+      if (!session.targetLanguageNotice) showToast("当前字幕已是目标语言，无需翻译", "info");
+      session.targetLanguageNotice = true;
+      session.firstChange = 0;
+      return;
     }
     if (!text) {
       session.firstChange = 0;
@@ -516,11 +547,18 @@
         shownSource.length > text.length && extendsCaptionUnit(text, shownSource);
       if (extendsCaptionUnit(text, session.text) && !shownCoversMore) {
         session.translation = translated;
+        session.lastValidTranslation = translated;
         session.translationSource = text;
         renderYouTubeCaptions();
       }
     } catch (error) {
-      if (session === captionSession) showToast(error.message || "字幕翻译失败", "error");
+      if (session === captionSession) {
+        if (extendsCaptionUnit(text, session.text) && !session.translation) {
+          session.translation = session.lastValidTranslation || "";
+          renderYouTubeCaptions();
+        }
+        showToast(error.message || "字幕翻译失败", "error");
+      }
     } finally {
       session.busy = false;
       if (session === captionSession && session.ready) void translateYouTubeCaption(session);
@@ -764,6 +802,7 @@
   function handleSpaNavigation() {
     if (captionSession) {
       restoreOriginal({ silent: true });
+      showToast("视频或页面已切换，请再次点击「翻译字幕」", "info");
       notifyPopupStatus();
       return;
     }
@@ -2940,12 +2979,13 @@
     if (!normalized) {
       return;
     }
+    const field = Utils.isYouTubeWatchUrl(location.href) ? "youtubeDisplayMode" : "displayMode";
     state.displayMode = normalized;
     applyDocumentDisplayMode(normalized);
     refreshAllBlockDisplays();
     displayModeWriteChain = displayModeWriteChain
       .catch(() => {})
-      .then(() => chrome.storage.local.set({ displayMode: normalized }))
+      .then(() => chrome.storage.local.set({ [field]: normalized }))
       .catch(() => {});
     updateProgressPill();
   }

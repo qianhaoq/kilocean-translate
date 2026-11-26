@@ -12,6 +12,25 @@ export async function checkYouTubeCaptions(ROOT) {
     assert.equal(utils.isYouTubeWatchUrl(url), false);
   }
   const source = fs.readFileSync(`${ROOT}/content.js`, "utf8");
+  // Run the real storage listener with both scene fields: unrelated changes
+  // must never alter the current scene's display mode.
+  for (const youtube of [true, false]) {
+    let listener;
+    const modeState = { displayMode: youtube ? "translation-only" : "bilingual" };
+    const storageContext = vm.createContext({
+      Utils: utils, state: modeState,
+      location: { href: youtube ? "https://www.youtube.com/watch?v=storage" : "https://arxiv.org/html/123" },
+      chrome: { storage: { onChanged: { addListener: (fn) => { listener = fn; } } } },
+      applyDocumentDisplayMode() {}, refreshAllBlockDisplays() {}, updateProgressPill() {}
+    });
+    const storageSource = source.match(/chrome\.storage\.onChanged\.addListener\([\s\S]*?\n  \}\);/)[0];
+    vm.runInContext(storageSource, storageContext);
+    listener({ [youtube ? "displayMode" : "youtubeDisplayMode"]: { newValue: "original" } }, "local");
+    assert.equal(modeState.displayMode, youtube ? "translation-only" : "bilingual");
+    listener({ [youtube ? "youtubeDisplayMode" : "displayMode"]: { newValue: "original" } }, "local");
+    assert.equal(modeState.displayMode, "original");
+  }
+
   const names = ["extendsCaptionUnit", "readYouTubeCaptions", "translateYouTubeCaption", "renderYouTubeCaptions", "stopYouTubeCaptions"];
   const functions = names.map((name) => source.match(new RegExp(`(?:async )?function ${name}\\([\\s\\S]*?\\n  \\}`))[0]).join("\n");
   const startSource = source.match(/function startYouTubeCaptions\([\s\S]*?\n  \}/)[0];
@@ -30,8 +49,14 @@ export async function checkYouTubeCaptions(ROOT) {
   let visibleText = "Hello";
   const cache = new Map();
   const overlay = { textContent: "", hidden: true, remove() { this.removed = true; } };
+  const opacity = { value: ".8", priority: "" };
+  const nativeCc = { style: {
+    getPropertyValue: () => opacity.value, getPropertyPriority: () => opacity.priority,
+    setProperty: (key, value, priority) => Object.assign(opacity, { value, priority }),
+    removeProperty: () => Object.assign(opacity, { value: "", priority: "" })
+  } };
   const session = {
-    player: { querySelector: () => ({ getAttribute: () => "true" }), querySelectorAll: () => [{ textContent: visibleText, getClientRects: () => [1] }] },
+    player: { querySelector: () => ({ getAttribute: () => "true" }), querySelectorAll: (selector) => selector.includes("window-container") ? [nativeCc] : [{ textContent: visibleText, getClientRects: () => [1] }] },
     overlay, observer: { disconnect() {} }, settings: {}, runId: 1,
     text: "", translation: "", translationSource: "", ready: "", firstChange: 0, busy: false
   };
@@ -44,7 +69,7 @@ export async function checkYouTubeCaptions(ROOT) {
     getCachedTranslation: (text) => cache.get(text) ?? null,
     setCachedTranslation: (text, value) => cache.set(text, value),
     requestSegmentTranslations: (texts) => new Promise((resolve) => requests.push({ texts, resolve })),
-    showToast: (message) => { throw new Error(message); }
+    showToast: (message) => hints.push(message)
   });
   vm.runInContext(functions, context);
   const read = () => context.readYouTubeCaptions(session);
@@ -70,6 +95,10 @@ export async function checkYouTubeCaptions(ROOT) {
   context.state.displayMode = "translation-only";
   context.renderYouTubeCaptions();
   assert.equal(overlay.textContent, "下一句");
+  assert.equal(opacity.value, "0");
+  context.state.displayMode = "bilingual";
+  context.renderYouTubeCaptions();
+  assert.equal(opacity.value, ".8");
   context.state.displayMode = "original";
   context.renderYouTubeCaptions();
   assert.equal(overlay.hidden, true);
@@ -77,9 +106,18 @@ export async function checkYouTubeCaptions(ROOT) {
   assert.equal(session.translation, "", "caption disappearance clears stale translation");
   visibleText = "Hello world."; read(); fire(); await settle();
   assert.equal(requests.length, 2, "revisited cue uses LRU cache");
+  visibleText = "Failed cue."; read(); fire();
+  requests[2].resolve([]); await settle();
+  assert.equal(overlay.textContent, "你好世界", "failure restores last valid translation");
+  const beforeChinese = requests.length;
+  visibleText = "这已经是中文字幕。"; read(); fire(); await settle();
+  assert.equal(requests.length, beforeChinese, "Chinese captions never request translation");
+  assert.equal(utils.isCaptionInTargetLanguage("日本語の字幕です", "zh-CN"), false);
+  context.state.displayMode = "translation-only"; context.renderYouTubeCaptions();
   visibleText = "Pending navigation."; read(); fire();
   context.stopYouTubeCaptions();
-  requests[2].resolve(["过期"]); await settle();
+  requests[3].resolve(["过期"]); await settle();
+  assert.equal(opacity.value, ".8", "stop restores original native opacity");
   assert.equal(context.captionSession, null);
   assert.equal(overlay.removed, true, "stop removes fullscreen overlay and rejects late results");
 
@@ -95,7 +133,7 @@ export async function checkYouTubeCaptions(ROOT) {
   const rollingOverlay = { textContent: "", hidden: true, remove() { this.removed = true; } };
   let liveText = "";
   const rollingSession = {
-    player: { querySelector: () => ({ getAttribute: () => "true" }), querySelectorAll: () => [{ textContent: liveText, getClientRects: () => [1] }] },
+    player: { querySelector: () => ({ getAttribute: () => "true" }), querySelectorAll: (selector) => selector.includes("window-container") ? [] : [{ textContent: liveText, getClientRects: () => [1] }] },
     overlay: rollingOverlay, observer: { disconnect() {} }, settings: {}, runId: 2,
     text: "", translation: "", translationSource: "", ready: "", firstChange: 0, busy: false
   };
@@ -110,7 +148,7 @@ export async function checkYouTubeCaptions(ROOT) {
       sent.push({ texts: [...texts], at: rollingClock.value });
       return new Promise((resolve) => schedule(() => resolve([`译（${texts[0]}）`]), 400));
     },
-    showToast: (message) => { throw new Error(message); }
+    showToast: (message) => hints.push(message)
   });
   vm.runInContext(functions, rollingContext);
   const readRolling = () => rollingContext.readYouTubeCaptions(rollingSession);

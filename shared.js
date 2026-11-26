@@ -378,6 +378,15 @@
       host.endsWith(".x.com") || host.endsWith(".twitter.com");
   }
 
+  function isCaptionInTargetLanguage(text, targetLanguage) {
+    if (!/^zh(?:-|$)/i.test(targetLanguage)) return false;
+    const letters = text.match(/\p{L}/gu) || [];
+    const han = text.match(/\p{Script=Han}/gu) || [];
+    // Reject Japanese kana as well as predominantly Latin/mixed subtitles.
+    return han.length >= 2 && han.length / Math.max(1, letters.length) >= 0.6 &&
+      !/[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(text);
+  }
+
   function isYouTubeWatchUrl(value) {
     try {
       const url = new URL(value);
@@ -975,6 +984,7 @@
     isSkippableText,
     isXHost,
     isYouTubeWatchUrl,
+    isCaptionInTargetLanguage,
     preserveWhitespace,
     orderSegmentsByViewport,
     chunkSegments,

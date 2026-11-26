@@ -40,7 +40,8 @@ const DEFAULT_SETTINGS = {
   apiKey: "",
   model: "deepseek-flash",
   targetLanguage: "zh-CN",
-  displayMode: Utils.DISPLAY_MODES.bilingual
+  displayMode: Utils.DISPLAY_MODES.bilingual,
+  youtubeDisplayMode: Utils.DISPLAY_MODES.translationOnly
 };
 
 // popup.html opened as a normal extension tab (?view=settings). Settings and
@@ -68,6 +69,7 @@ const SETTINGS_IMPORT_FIELDS = new Set([
   "targetLanguage",
   "model",
   "displayMode",
+  "youtubeDisplayMode",
   "deepseekApiKey",
   "kimiApiKey"
 ]);
@@ -158,8 +160,11 @@ function parseImportedSettings(parsed) {
   if (raw.displayMode && !SETTINGS_IMPORT_DISPLAY_MODES.has(raw.displayMode)) {
     throw new Error(`不支持的显示模式：${raw.displayMode}`);
   }
+  if (raw.youtubeDisplayMode && !SETTINGS_IMPORT_DISPLAY_MODES.has(raw.youtubeDisplayMode)) {
+    throw new Error("不支持的 YouTube 显示模式");
+  }
   const imported = {};
-  for (const field of ["provider", "targetLanguage", "displayMode"]) {
+  for (const field of ["provider", "targetLanguage", "displayMode", "youtubeDisplayMode"]) {
     if (raw[field]) {
       imported[field] = raw[field].trim();
     }
@@ -202,6 +207,7 @@ const SETTINGS_FIELDS = [
   "model",
   "targetLanguage",
   "displayMode",
+  "youtubeDisplayMode",
   "deepseekKeyStatus",
   "deepseekKeyStatusFor",
   "kimiKeyStatus",
@@ -365,6 +371,25 @@ const elements = {
   providerOptions: [...document.querySelectorAll(".provider-option")]
 };
 
+function displayModeField() {
+  return Utils.isYouTubeWatchUrl(currentTab?.url) ? "youtubeDisplayMode" : "displayMode";
+}
+
+function refreshPageAction() {
+  const youtube = Utils.isYouTubeWatchUrl(currentTab?.url);
+  document.getElementById("translate-label").textContent = youtube ? "翻译字幕" : "翻译此页";
+  document.getElementById("youtube-hint").hidden = !youtube;
+}
+
+chrome.tabs.onUpdated?.addListener(whenReady((tabId, changeInfo) => {
+  if (tabId !== currentTab?.id || !changeInfo.url) return;
+  currentTab = { ...currentTab, url: changeInfo.url };
+  refreshPageAction();
+  currentDisplayMode = Utils.normalizeDisplayMode(settingsModel.edits[displayModeField()] ??
+    settingsModel.snapshot[displayModeField()] ?? DEFAULT_SETTINGS[displayModeField()]);
+  renderDisplayMode();
+}));
+
 let currentTab = null;
 let statusTimer = null;
 let currentDisplayMode = Utils.DISPLAY_MODES.bilingual;
@@ -479,7 +504,9 @@ function readControlValues() {
     kimiApiKey: providerKeyValue("kimi"),
     targetLanguage: elements.targetLanguage.value,
     model: elements.model.value,
-    displayMode: Utils.normalizeDisplayMode(currentDisplayMode)
+    displayMode: settingsModel.edits.displayMode ?? settingsModel.snapshot.displayMode ?? DEFAULT_SETTINGS.displayMode,
+    youtubeDisplayMode: settingsModel.edits.youtubeDisplayMode ?? settingsModel.snapshot.youtubeDisplayMode ?? DEFAULT_SETTINGS.youtubeDisplayMode,
+    [displayModeField()]: Utils.normalizeDisplayMode(currentDisplayMode)
   };
   values[PROVIDER_META[provider].keyField] = elements.apiKey.value.trim();
   return values;
@@ -567,11 +594,11 @@ function applyFieldsToControls(applied) {
       elements.targetLanguage.value = applied.targetLanguage;
     }
   }
-  if ("displayMode" in applied) {
+  if (displayModeField() in applied) {
     // Always render, even when the mode is unchanged: on a first load the
     // stored/default mode equals the in-memory default, and the buttons still
     // need their initial active state (no button is marked active in markup).
-    currentDisplayMode = Utils.normalizeDisplayMode(applied.displayMode);
+    currentDisplayMode = Utils.normalizeDisplayMode(applied[displayModeField()]);
     renderDisplayMode();
   }
   // The key input mirrors the active provider's key — the post-swap one if
@@ -914,7 +941,7 @@ elements.modeButtons.forEach((button) => {
     const op = ++displayModeOp;
     // User edit: dirty until the write lands, so a concurrent reconcile
     // cannot fight the click.
-    settingsModel.edits.displayMode = mode;
+    settingsModel.edits[displayModeField()] = mode;
     currentDisplayMode = mode;
     renderDisplayMode();
     // Through the serialized save path (never a direct storage write): a
@@ -935,7 +962,7 @@ elements.modeButtons.forEach((button) => {
     // while its write was in flight (another view changed the preference):
     // the radiogroup and the page below follow the snapshot's effective
     // mode, never the value this click wrote.
-    const effectiveMode = Utils.normalizeDisplayMode(settingsModel.snapshot.displayMode);
+    const effectiveMode = Utils.normalizeDisplayMode(settingsModel.snapshot[displayModeField()]);
     if (effectiveMode !== currentDisplayMode) {
       currentDisplayMode = effectiveMode;
       renderDisplayMode();
@@ -1014,7 +1041,8 @@ elements.translate.addEventListener("click", whenReady(async () => {
         provider: settings.provider,
         targetLanguage: settings.targetLanguage,
         model: settings.model,
-        displayMode: settings.displayMode
+        displayMode: settings.displayMode,
+        youtubeDisplayMode: settings.youtubeDisplayMode || "translation-only"
       }
     });
 
@@ -1051,7 +1079,7 @@ elements.restore.addEventListener("click", async () => {
     renderTranslationStatus(response.status);
     stopStatusPolling();
   } catch {
-    setStatus("当前页面尚未翻译", "点击「翻译此页」开始，或选中文字按 Alt+T", "idle");
+    setStatus("当前页面尚未翻译", Utils.isYouTubeWatchUrl(currentTab?.url) ? "先开启 YouTube 字幕（CC），再点「翻译字幕」；默认只看译文，双语可对照" : "点击「翻译此页」开始，或选中文字按 Alt+T", "idle");
   }
 });
 
@@ -1145,6 +1173,7 @@ async function initialize() {
   // same writes — a stale first snapshot can never roll a newer value back.
   const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
   currentTab = tabs[0];
+  refreshPageAction();
 
   // Restricted detection needs only the tab URL — settle it BEFORE the
   // storage read and the setup-mode decision below (Codex PR #19 P2-2): a
@@ -2133,7 +2162,8 @@ function buildExportPayload(settings, includeKeys) {
       provider: settings.provider,
       targetLanguage: settings.targetLanguage,
       model: settings.model,
-      displayMode: settings.displayMode
+      displayMode: settings.displayMode,
+      youtubeDisplayMode: settings.youtubeDisplayMode || "translation-only"
     }
   };
   if (includeKeys) {
@@ -2164,7 +2194,7 @@ async function exportSettingsFile() {
       provider: activeProvider(),
       targetLanguage: elements.targetLanguage.value,
       model: elements.model.value,
-      displayMode: Utils.normalizeDisplayMode(currentDisplayMode)
+      ...readControlValues()
     };
   }
   const includeKeys = Boolean(elements.exportIncludeKeys?.checked);
@@ -2231,8 +2261,8 @@ async function importSettingsFile(file) {
 // write already in flight, and an edit the user makes to an imported field
 // while the import's write is pending stays dirty and wins the follow-up.
 async function applyImportedSettings(imported) {
-  const updates = {};
-  for (const field of ["provider", "targetLanguage", "model", "displayMode"]) {
+  const updates = { youtubeDisplayMode: imported.youtubeDisplayMode || "translation-only" };
+  for (const field of ["provider", "targetLanguage", "model", "displayMode", "youtubeDisplayMode"]) {
     if (imported[field]) {
       updates[field] = imported[field];
     }
