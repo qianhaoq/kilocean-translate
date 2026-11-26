@@ -2169,6 +2169,8 @@ function createPopupVm(
     "toggle-key",
     "test-connection",
     "translate",
+    "translate-label",
+    "youtube-hint",
     "restore",
     "export-html",
     "print-pdf",
@@ -2228,6 +2230,7 @@ function createPopupVm(
   // assert exactly one RETRY_FAILED and where the shortcuts link points.
   const tabMessages = [];
   const tabCreates = [];
+  const tabUpdatedListeners = [];
   const sandbox = {
     console: { log() {}, warn() {}, error() {} },
     setTimeout,
@@ -2239,7 +2242,7 @@ function createPopupVm(
     // globals must be handed in for popup.js's settings-tab detection.
     URLSearchParams,
     Blob: FakeBlob,
-    URL: { createObjectURL: () => `blob:fake-${blobs.length}`, revokeObjectURL() {} },
+    URL: class extends URL { static createObjectURL() { return `blob:fake-${blobs.length}`; } static revokeObjectURL() {} },
     // Recorded (unlike a no-op) so tests can fire pagehide, and swapped per
     // test when a scenario needs to capture the 700 ms status-poll interval.
     addEventListener(type, fn) {
@@ -2278,6 +2281,7 @@ function createPopupVm(
         onChanged: { addListener(fn) { storageListeners.push(fn); } }
       },
       tabs: {
+        onUpdated: { addListener: (fn) => tabUpdatedListeners.push(fn) },
         query: async () => [{ id: 42, ...activeTab }],
         sendMessage: async (tabId, message) => {
           tabMessages.push({ tabId, message });
@@ -2326,6 +2330,7 @@ function createPopupVm(
     tabMessages,
     tabCreates,
     providerOptionButtons,
+    emitTabUrl: (url) => Promise.all(tabUpdatedListeners.map((fn) => fn(42, { url }))),
     emitStorageChange(changes) {
       for (const [field, change] of Object.entries(changes)) {
         storageData[field] = change.newValue;
@@ -3019,6 +3024,11 @@ async function checkKeyMigrationGate() {
           fail(`export: the derived field ${field} must never be exported`);
         }
       }
+      const youtubeBackup = popup.hooks.parseImportedSettings(
+        popup.hooks.buildExportPayload({ ...base, youtubeDisplayMode: "original" }, false));
+      if (youtubeBackup.youtubeDisplayMode !== "original" || youtubeBackup.displayMode !== "bilingual") {
+        fail("YouTube backup mode must round-trip independently of webpage mode");
+      }
       const roundTrip = popup.hooks.parseImportedSettings(popup.hooks.buildExportPayload(base, true));
       if (roundTrip.deepseekApiKey !== DEEPSEEK_KEY || roundTrip.kimiApiKey !== KIMI_KEY) {
         fail("export→import round trip must preserve opted-in keys");
@@ -3402,7 +3412,8 @@ async function checkCommandsAndContextMenu() {
           provider: "deepseek",
           targetLanguage: "zh-TW",
           model: "deepseek-v4-pro",
-          displayMode: "translation-only"
+          displayMode: "translation-only",
+          youtubeDisplayMode: "translation-only"
         }
       },
       "Alt+A (keyed): START_TRANSLATION carries the stored provider/language/model/displayMode"
@@ -5594,7 +5605,7 @@ async function checkSettingsWriteQueueConcurrency() {
     assertEqual(starts.length, 1, "translate follow-up: the page starts exactly once, after the follow-up write committed");
     assertEqual(
       starts[0].options,
-      { provider: "deepseek", targetLanguage: "zh-CN", model: "deepseek-flash", displayMode: "bilingual" },
+      { provider: "deepseek", targetLanguage: "zh-CN", model: "deepseek-flash", displayMode: "bilingual", youtubeDisplayMode: "translation-only" },
       "translate follow-up: the page is started with the settled settings"
     );
     assertEqual(storageAtMessage[0].deepseekApiKey, RETYPED_KEY, "translate follow-up: storage already holds the NEW key when the page is told to translate");
@@ -5906,6 +5917,7 @@ async function checkPopupActionInitGate() {
   const createGatedPopup = (storageData, options = {}) => {
     options.runtimeMessages = options.runtimeMessages || [];
     const popup = createPopupVm(storageData, {
+      activeTab: options.activeTab || {},
       runtimeMessageHandler: async (message) => {
         options.runtimeMessages.push(message);
         return options.onRuntimeMessage ? options.onRuntimeMessage(message) : { ok: false };
@@ -5973,6 +5985,7 @@ async function checkPopupActionInitGate() {
         targetLanguage: "ja",
         model: "kimi-k3",
         displayMode: "original",
+        youtubeDisplayMode: "translation-only",
         deepseekApiKey: DEEPSEEK_KEY,
         kimiApiKey: KIMI_KEY
       },
@@ -6058,7 +6071,7 @@ async function checkPopupActionInitGate() {
     await click;
     assertEqual(
       messagesOfType(tabMessages, "START_TRANSLATION").map((message) => message.options),
-      [{ provider: "kimi", targetLanguage: "ja", model: "kimi-k3", displayMode: "original" }],
+      [{ provider: "kimi", targetLanguage: "ja", model: "kimi-k3", displayMode: "original", youtubeDisplayMode: "translation-only" }],
       "translate gate: the page is started with the STORED settings, never defaults"
     );
   }
@@ -6085,6 +6098,51 @@ async function checkPopupActionInitGate() {
       ["translation-only"],
       "display mode gate: the page is told the clicked mode"
     );
+  }
+
+  // YouTube uses the existing init gate and serialized queue, with a
+  // distinct field. Hold both init and writes to exercise rapid mode clicks.
+  {
+    const { popup, release, writes } = createGatedPopup(
+      seededStorage({ displayMode: "original", youtubeDisplayMode: "translation-only" }),
+      { activeTab: { url: "https://www.youtube.com/watch?v=ux" } }
+    );
+    const modes = popup.sandbox.document.querySelectorAll(".mode-button");
+    await tick();
+    assertEqual(popup.dom.get("translate-label").textContent, "翻译字幕", "YouTube action label");
+    const click = fireAction(modes[0], "click");
+    await tick();
+    assertEqual(writes.length, 0, "YouTube mode waits for initial storage read");
+    release();
+    await click;
+    assertEqual(popup.storage.displayMode, "original", "YouTube never overwrites webpage mode");
+    assertEqual(popup.storage.youtubeDisplayMode, "bilingual", "YouTube mode has its own storage field");
+    const pending = [];
+    popup.sandbox.chrome.storage.local.set = (patch) => new Promise((resolve) => {
+      pending.push({ patch, release() { Object.assign(popup.storage, patch); resolve(); } });
+    });
+    const first = fireAction(modes[1], "click");
+    await tick();
+    const second = fireAction(modes[2], "click");
+    await tick();
+    assertEqual(pending.length, 1, "YouTube writes are serialized");
+    pending[0].release();
+    await waitFor(() => pending.length === 2, "YouTube follow-up write");
+    pending[1].release();
+    await Promise.all([first, second]);
+    assertEqual(popup.storage.youtubeDisplayMode, "original", "latest YouTube click wins");
+    assertEqual(popup.storage.displayMode, "original", "webpage mode survives concurrent YouTube edits");
+    await popup.emitTabUrl("https://arxiv.org/html/123");
+    assertEqual(popup.dom.get("translate-label").textContent, "翻译此页", "SPA URL refreshes page action");
+    assertEqual(popup.dom.get("youtube-hint").hidden, true, "webpage hides YouTube instructions");
+    await popup.emitTabUrl("https://www.youtube.com/watch?v=next");
+    assertEqual(popup.dom.get("translate-label").textContent, "翻译字幕", "watch URL restores caption action");
+
+  }
+  {
+    const popup = createPopupVm(seededStorage(), { activeTab: { url: "https://arxiv.org/html/123" } });
+    await popup.hooks.initializePromise;
+    assertEqual(popup.dom.get("translate-label").textContent, "翻译此页", "ordinary webpage action label");
   }
 
   // (6) Selection confirm: the confirm (worker + page messages) waits for

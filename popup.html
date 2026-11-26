@@ -33,7 +33,7 @@
         </button>
 
         <button id="translate" class="primary-button translate-button" type="button">
-          <span>翻译此页</span>
+          <span id="translate-label">翻译此页</span>
           <kbd id="translate-shortcut">Alt+A</kbd>
         </button>
 
@@ -58,6 +58,7 @@
           <button id="mode-original" class="mode-button" type="button" role="radio" aria-checked="false" data-mode="original">原文</button>
         </div>
 
+        <p id="youtube-hint" class="selection-hint" hidden>先开启 YouTube 字幕（CC），再点「翻译字幕」；默认只看译文，双语可对照。切视频后需再次点击。</p>
         <p id="selection-hint" class="selection-hint">划词：选中后按 <kbd id="selection-shortcut">Alt+T</kbd>，或右键「翻译选中文字」</p>
 
         <section id="selection-confirm-panel" class="selection-confirm-panel" hidden aria-labelledby="selection-confirm-title">
